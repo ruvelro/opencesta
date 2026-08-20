@@ -1,0 +1,85 @@
+name: Daily snapshot
+
+on:
+  schedule:
+    - cron: "17 5 * * *"  # 05:17 UTC, off the hour on purpose
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - name: Live contract tests
+        id: contract
+        run: uv run pytest -m contract -v 2>&1 | tee contract.log
+      - name: Open issue on schema drift
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let log = '';
+            try { log = fs.readFileSync('core/contract.log', 'utf8').slice(-6000); } catch {}
+            const title = 'Contract test failure: Mercadona API drifted';
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'contract-drift',
+            });
+            if (open.data.some(i => i.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title,
+              labels: ['contract-drift'],
+              body: 'El contract test diario ha fallado: el esquema vivo de la API ya no coincide con el esperado.\n\n```\n' + log + '\n```\n\nActualiza el adaptador y regraba las golden fixtures de `core/tests/fixtures/mercadona/`.',
+            });
+
+  snapshot:
+    needs: contract
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1  # one zone at a time: be gentle with their infra
+      matrix:
+        zone: [vlc1, mad1, bcn1, alc1]
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run opencesta snapshot --chain mercadona --zone ${{ matrix.zone }} --out ../data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prices-mercadona-${{ matrix.zone }}
+          path: data/
+          retention-days: 30
+
+  publish:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: data/
+          merge-multiple: true
+      - name: Publish daily release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="prices-$(date -u +%F)"
+          tar -czf prices.tar.gz data/
+          gh release create "$TAG" prices.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Precios $(date -u +%F)" \
+            --notes "Snapshot diario del dataset (Parquet particionado por chain/zone/date)." \
+            || gh release upload "$TAG" prices.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
