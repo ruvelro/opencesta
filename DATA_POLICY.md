@@ -11,3 +11,27 @@ OpenCesta recopila precios públicos de supermercados para publicar un dataset a
 7. **Checkout nunca automático.** Cualquier herramienta construida sobre este dataset propone; el botón de pagar lo pulsa siempre una persona.
 8. **Tickets locales por defecto.** El parser de tickets (fase 2) procesa todo en la máquina del usuario. La contribución de precios desde tickets es anonimizada y opt-in: solo `(producto, precio, tienda, fecha)`, sin identidad.
 9. **Derecho de retirada.** Si una cadena solicita formalmente la exclusión de sus datos, se atiende y se documenta públicamente.
+10. **Nunca evadimos detección de bots.** No suplantamos huellas TLS de navegador (`curl_cffi` y similares), no rotamos proxies ni IPs, no resolvemos CAPTCHAs y no ocultamos quiénes somos. Si una cadena bloquea nuestro User-Agent identificado, la respuesta es **parar y documentarlo**, no disfrazarnos.
+
+## Dia: adaptador en pausa por decisión pendiente
+
+Dia está detrás de Akamai. Midiendo el comportamiento real con nuestro User-Agent
+identificado, el bloqueo se dispara con una cabecera concreta:
+
+| Petición (siempre con nuestro User-Agent) | Respuesta |
+|---|---|
+| Solo `User-Agent` | 200 |
+| `+ accept: */*` | 200 |
+| `+ connection: keep-alive` | 200 |
+| `+ accept-encoding: gzip, deflate` | **403** |
+| `+ accept-encoding: gzip, deflate, br` | 200 |
+
+Es decir, Akamai marca como bot la firma clásica de un cliente Python (`gzip, deflate`) y
+deja pasar la de un navegador (`…, br`). **Ajustar esa cabecera para parecer un navegador
+sería evadir detección de bots y el punto 10 lo prohíbe.**
+
+Enviar únicamente nuestro `User-Agent`, sin `accept-encoding`, también recibe 200 — y eso
+no es suplantar a nadie, sino mandar la petición más simple posible. Pero es una decisión
+de política, no técnica, así que el adaptador de Dia **queda escrito y testeado contra
+fixtures, pero sin ejecución en vivo** hasta que se resuelva de forma explícita y pública.
+El código está en [`core/src/opencesta/adapters/dia.py`](core/src/opencesta/adapters/dia.py).

@@ -81,6 +81,43 @@ def test_enrich_is_incremental(tmp_path, patched_adapter):
     assert sorted(load_catalog(catalog_path)["sku"].to_list()) == ["1", "2", "3"]
 
 
+def test_enrich_retries_transient_failure(tmp_path, monkeypatch, patched_adapter):
+    write_prices(tmp_path, ["1"])
+    monkeypatch.setattr("opencesta.enrich.time.sleep", lambda _: None)
+    attempts = []
+
+    def flaky(self, sku, zone):
+        attempts.append(sku)
+        if len(attempts) < 3:
+            raise httpx.ReadTimeout("boom")
+        return detail(sku)
+
+    monkeypatch.setattr("opencesta.adapters.mercadona.MercadonaAdapter.get_product", flaky)
+    catalog_path = tmp_path / "catalog" / "mercadona.parquet"
+
+    assert enrich_catalog("mercadona", "vlc1", tmp_path, catalog_path) == (1, 0)
+    assert len(attempts) == 3
+
+
+def test_enrich_keeps_progress_when_run_dies(tmp_path, monkeypatch, patched_adapter):
+    """A timeout mid-run must not throw away everything fetched before it."""
+    write_prices(tmp_path, ["1", "2", "3", "4"])
+    monkeypatch.setattr("opencesta.enrich.time.sleep", lambda _: None)
+
+    def dies_on_third(self, sku, zone):
+        if sku == "3":
+            raise httpx.ReadTimeout("boom")
+        return detail(sku)
+
+    monkeypatch.setattr("opencesta.adapters.mercadona.MercadonaAdapter.get_product", dies_on_third)
+    catalog_path = tmp_path / "catalog" / "mercadona.parquet"
+
+    with pytest.raises(httpx.ReadTimeout):
+        enrich_catalog("mercadona", "vlc1", tmp_path, catalog_path, checkpoint_every=1)
+
+    assert sorted(load_catalog(catalog_path)["sku"].to_list()) == ["1", "2"]
+
+
 def test_enrich_skips_delisted_sku(tmp_path, patched_adapter):
     write_prices(tmp_path, ["1", "gone"])
     patched_adapter({"1": detail("1")}, [])
