@@ -22,7 +22,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | ✅ 1 | Adaptador Mercadona + snapshot diario + Parquet publicado |
 | 2 | Parser de tickets local-first + dashboard personal |
 | 🔨 3 | Dia ✅ · Alcampo/Carrefour · zonificación real de Dia |
-| 4 | Motor de equivalencias + overrides comunitarios (`equivalences.jsonl`) |
+| 🔨 4 | Marca nacional ✅ · overrides comunitarios ✅ · marca blanca (embeddings + juez) |
 | 5 | Optimizador de cesta explicable |
 | 6 | MCP server + carrito pre-rellenado |
 | 🔨 7 | Tu inflación real vs IPC del INE ✅ · alertas de precio |
@@ -78,6 +78,24 @@ uv run opencesta diff --zone vlc1 --prices ../data
 cambios de precio: 119 | nuevos: 23 | descatalogados: 18
 variación del catálogo comparable: -0,06%
 ```
+
+`match` empareja productos de marca nacional entre dos cadenas y escribe el resultado
+con sus evidencias:
+
+```bash
+uv run opencesta match --prices ../data --overrides ../overrides.jsonl --out ../equivalences.jsonl
+```
+
+```
+mercadona/vlc1 vs dia/es-default  (2026-08-27)
+4338 x 5503 productos -> 132 equivalencias en 60 marcas
+mismo precio: 80 | más barato en mercadona: 26 | más barato en dia: 26
+```
+
+Cada línea de `equivalences.jsonl` lleva por qué se emparejó (términos compartidos,
+tamaño, score), para que una persona pueda auditarla. Si algo está mal —o si falta un
+par que el matcher no ve— se corrige en [`overrides.jsonl`](overrides.jsonl) y esa
+corrección gana para siempre.
 
 Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
 

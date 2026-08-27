@@ -9,6 +9,7 @@ from opencesta.adapters import ADAPTERS
 from opencesta.enrich import enrich_catalog
 from opencesta.history import diff
 from opencesta.ine import compare, fetch_series, span_series
+from opencesta.match import load_for_matching, load_overrides, match_records, write_equivalences
 from opencesta.snapshot import snapshot
 
 
@@ -34,6 +35,21 @@ def main(argv: list[str] | None = None) -> int:
     zone = sub.add_parser("zone", help="resolve a postal code to a zone id")
     zone.add_argument("postal_code")
     zone.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
+
+    mat = sub.add_parser("match", help="pair national-brand products across two chains")
+    mat.add_argument("--a", default="mercadona", choices=sorted(ADAPTERS))
+    mat.add_argument("--zone-a", default="vlc1")
+    mat.add_argument("--b", default="dia", choices=sorted(ADAPTERS))
+    mat.add_argument("--zone-b", default="es-default")
+    mat.add_argument("--prices", type=Path, default=Path("data"))
+    mat.add_argument("--date", default=None, help="ISO date (default: newest common date)")
+    # Kept distinct on purpose: overrides are hand-written and live in git, the
+    # output is regenerated. Pointing both at one file would feed the computed
+    # pairs back in as if a human had confirmed them.
+    mat.add_argument("--overrides", type=Path, default=Path("overrides.jsonl"),
+                     help="community corrections; they always win")
+    mat.add_argument("--out", type=Path, default=None, help="write the pairs as JSONL")
+    mat.add_argument("--min-score", type=float, default=0.5)
 
     inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
     inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
@@ -63,10 +79,51 @@ def main(argv: list[str] | None = None) -> int:
         print(ADAPTERS[args.chain]().zone_for_postal_code(args.postal_code))
     elif args.command == "diff":
         _print_diff(diff(args.prices, args.chain, args.zone, args.since, args.until), args.top)
+    elif args.command == "match":
+        return _run_match(args)
     elif args.command == "inflation":
         return _print_inflation(
             diff(args.prices, args.chain, args.zone, args.since, args.until)
         )
+    return 0
+
+
+def _run_match(args) -> int:
+    pairs, date = load_for_matching(
+        args.prices, (args.a, args.zone_a), (args.b, args.zone_b), args.date
+    )
+    records_a, records_b = pairs
+    equivalences = match_records(
+        records_a,
+        records_b,
+        min_score=args.min_score,
+        overrides=load_overrides(args.overrides),
+    )
+    by_sku_a = {str(r["sku"]): r for r in records_a}
+    by_sku_b = {str(r["sku"]): r for r in records_b}
+
+    print(f"{args.a}/{args.zone_a} vs {args.b}/{args.zone_b}  ({date})")
+    print(f"{len(records_a)} x {len(records_b)} productos -> {len(equivalences)} equivalencias "
+          f"en {len({e.brand for e in equivalences})} marcas")
+
+    cheaper_a = cheaper_b = same = 0
+    for equivalence in equivalences:
+        price_a = by_sku_a[equivalence.sku_a].get("reference_price")
+        price_b = by_sku_b[equivalence.sku_b].get("reference_price")
+        if not price_a or not price_b:
+            continue
+        gap = (price_b - price_a) / price_a * 100
+        if gap < -1:
+            cheaper_b += 1
+        elif gap > 1:
+            cheaper_a += 1
+        else:
+            same += 1
+    print(f"mismo precio: {same} | más barato en {args.a}: {cheaper_a} "
+          f"| más barato en {args.b}: {cheaper_b}")
+
+    if args.out:
+        print(f"\n{write_equivalences(equivalences, args.out)}")
     return 0
 
 

@@ -8,3 +8,4 @@ dist/
 node_modules/
 .next/
 .DS_Store
+equivalences.jsonl

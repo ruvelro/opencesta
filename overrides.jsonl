@@ -1,0 +1,17 @@
+# Correcciones de la comunidad al emparejador de productos entre cadenas.
+#
+# Una línea JSON por corrección. Ganan siempre sobre lo que calcule el matcher,
+# y son permanentes: tu corrección le sirve a todo el mundo, para siempre.
+#
+#   {"verdict": "equivalent", "a": {"sku": "<sku Mercadona>"}, "b": {"sku": "<sku Dia>"}, "note": "por qué"}
+#   {"verdict": "different",  "a": {"sku": "<sku Mercadona>"}, "b": {"sku": "<sku Dia>"}, "note": "por qué"}
+#
+# Usa "equivalent" para unir dos productos que el matcher no ve (típicamente marca
+# blanca: Hacendado contra la marca propia de Dia, que no comparten ni marca ni EAN).
+# Usa "different" para romper un emparejamiento erróneo.
+#
+# Los SKU salen de la columna `sku` del dataset, o del final de la URL del producto.
+# Si un producto desaparece del catálogo, su línea se ignora sin romper nada y vuelve
+# a aplicarse si el producto regresa.
+#
+# Manda un PR. Se revisa a ojo: una línea, una decisión, con su motivo.

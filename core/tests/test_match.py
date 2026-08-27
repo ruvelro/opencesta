@@ -1,0 +1,236 @@
+import pytest
+
+from opencesta.match import (
+    load_overrides,
+    match_records,
+    parse_size,
+    record_size,
+    score_pair,
+    sizes_agree,
+    tokenize,
+    write_equivalences,
+)
+
+
+def product(sku, name, brand, fmt="L", unit_size=None, size_format=None):
+    return {
+        "sku": sku,
+        "display_name": name,
+        "brand": brand,
+        "reference_format": fmt,
+        "unit_size": unit_size,
+        "size_format": size_format,
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("pack 6 x 1 L", (6.0, "L")),
+        ("12 x 330 ml", (3.96, "L")),
+        ("330 g", (0.33, "kg")),
+        ("1,5 L", (1.5, "L")),
+        ("4 x 120 g", (0.48, "kg")),
+        ("2 x 2 L", (4.0, "L")),
+        ("sin tamaño alguno", None),
+    ],
+)
+def test_parse_size(text, expected):
+    assert parse_size(text) == expected
+
+
+def test_tokenize_drops_brand_size_and_stopwords():
+    tokens = tokenize("Leche semidesnatada Asturiana pack 6 x 1 L", "Asturiana")
+    assert tokens == frozenset({"leche", "semidesnatada"})
+
+
+def test_tokenize_handles_accents_and_multiword_brand():
+    tokens = tokenize("Refresco Coca-Cola zero azúcar 2 x 2 L", "Coca-Cola")
+    assert tokens == frozenset({"refresco", "zero", "azucar"})
+
+
+def test_record_size_prefers_explicit_fields():
+    """Mercadona keeps size out of the title; without the fields its rows collide."""
+    record = product("1", "Leche semidesnatada Asturiana", "Asturiana",
+                     unit_size=6.0, size_format="l")
+    assert record_size(record) == (6.0, "L")
+
+
+def test_record_size_falls_back_to_the_title():
+    record = product("2", "Leche semidesnatada Asturiana pack 6 x 1 L", "Asturiana")
+    assert record_size(record) == (6.0, "L")
+
+
+def test_score_pair():
+    assert score_pair(frozenset({"a", "b"}), frozenset({"a", "b"})) == 1.0
+    assert score_pair(frozenset({"a", "b"}), frozenset({"a", "c"})) == 0.333
+    assert score_pair(frozenset(), frozenset({"a"})) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ((6.0, "L"), (6.0, "L"), True),
+        ((6.0, "L"), (6.05, "L"), True),  # rounding
+        ((6.0, "L"), (1.0, "L"), False),  # different pack
+        ((1.0, "L"), (1.0, "kg"), False),  # different unit
+        (None, (1.0, "L"), False),
+    ],
+)
+def test_sizes_agree(a, b, expected):
+    assert sizes_agree(a, b) is expected
+
+
+def test_match_pairs_same_product_across_chains():
+    mercadona = [product("m1", "Leche semidesnatada Asturiana", "Asturiana",
+                         unit_size=6.0, size_format="l")]
+    dia = [product("d1", "Leche semidesnatada Asturiana pack 6 x 1 L", "Asturiana")]
+
+    matches = match_records(mercadona, dia)
+    assert len(matches) == 1
+    assert (matches[0].sku_a, matches[0].sku_b) == ("m1", "d1")
+    assert matches[0].score == 1.0
+    assert matches[0].size == 6.0
+    assert matches[0].shared_terms == ("leche", "semidesnatada")
+
+
+def test_size_separates_mercadona_rows_sharing_a_name():
+    """Four Mercadona rows share this exact title; only the 6 L one is the match."""
+    mercadona = [
+        product("m9", "Leche semidesnatada Asturiana", "Asturiana", unit_size=9.0, size_format="l"),
+        product("m6", "Leche semidesnatada Asturiana", "Asturiana", unit_size=6.0, size_format="l"),
+        product("m1", "Leche semidesnatada Asturiana", "Asturiana", unit_size=1.0, size_format="l"),
+    ]
+    dia = [product("d6", "Leche semidesnatada Asturiana pack 6 x 1 L", "Asturiana")]
+
+    matches = match_records(mercadona, dia)
+    assert [m.sku_a for m in matches] == ["m6"]
+
+
+def test_each_product_is_used_at_most_once():
+    mercadona = [product("m1", "Yogur natural Danone", "Danone", fmt="kg",
+                         unit_size=480.0, size_format="g")]
+    dia = [
+        product("d1", "Yogur natural Danone 4 x 120 g", "Danone", fmt="kg"),
+        product("d2", "Yogur natural azucarado Danone 4 x 120 g", "Danone", fmt="kg"),
+    ]
+
+    matches = match_records(mercadona, dia)
+    assert len(matches) == 1
+    assert matches[0].sku_b == "d1"  # the exact-wording pair wins over the variant
+
+
+def test_different_brands_never_match():
+    matches = match_records(
+        [product("m1", "Leche entera Asturiana", "Asturiana", unit_size=1.0, size_format="l")],
+        [product("d1", "Leche entera Puleva", "Puleva", unit_size=1.0, size_format="l")],
+    )
+    assert matches == []
+
+
+def test_different_reference_formats_never_match():
+    matches = match_records(
+        [product("m1", "Tomate frito Orlando", "Orlando", fmt="kg",
+                 unit_size=400.0, size_format="g")],
+        [product("d1", "Tomate frito Orlando 400 g", "Orlando", fmt="L")],
+    )
+    assert matches == []
+
+
+def test_low_overlap_is_rejected():
+    matches = match_records(
+        [product("m1", "Leche entera Asturiana", "Asturiana", unit_size=1.0, size_format="l")],
+        [product("d1", "Batido de chocolate Asturiana 1 L", "Asturiana")],
+    )
+    assert matches == []
+
+
+def test_price_is_not_an_input():
+    """Equivalence must not depend on price, or 'cheaper at X' becomes unfalsifiable."""
+    cheap = product("m1", "Leche entera Asturiana", "Asturiana", unit_size=1.0, size_format="l")
+    dear = product("d1", "Leche entera Asturiana 1 L", "Asturiana")
+    cheap["unit_price"], cheap["reference_price"] = 0.50, 0.50
+    dear["unit_price"], dear["reference_price"] = 9.99, 9.99
+
+    matches = match_records([cheap], [dear])
+    assert len(matches) == 1
+    assert matches[0].score == 1.0
+
+
+def test_override_forces_a_pair(tmp_path):
+    path = tmp_path / "equivalences.jsonl"
+    path.write_text(
+        '{"verdict": "equivalent", "a": {"sku": "m1"}, "b": {"sku": "d1"}, "note": "mismo bote"}\n',
+        encoding="utf-8",
+    )
+    mercadona = [product("m1", "Tomate frito", "Orlando", fmt="kg")]
+    dia = [product("d1", "Salsa de tomate estilo casero", "Orlando", fmt="kg")]
+
+    matches = match_records(mercadona, dia, overrides=load_overrides(path))
+    assert len(matches) == 1
+    assert matches[0].method == "community-override"
+    assert matches[0].shared_terms == ("mismo bote",)
+
+
+def test_override_forbids_a_pair(tmp_path):
+    path = tmp_path / "equivalences.jsonl"
+    path.write_text(
+        '{"verdict": "different", "a": {"sku": "m1"}, "b": {"sku": "d1"}}\n', encoding="utf-8"
+    )
+    mercadona = [product("m1", "Leche entera Asturiana", "Asturiana",
+                         unit_size=1.0, size_format="l")]
+    dia = [product("d1", "Leche entera Asturiana 1 L", "Asturiana")]
+
+    assert match_records(mercadona, dia) != []  # would match without the override
+    assert match_records(mercadona, dia, overrides=load_overrides(path)) == []
+
+
+def test_override_for_a_delisted_product_is_skipped(tmp_path):
+    path = tmp_path / "equivalences.jsonl"
+    path.write_text(
+        '{"verdict": "equivalent", "a": {"sku": "gone"}, "b": {"sku": "d1"}}\n', encoding="utf-8"
+    )
+    matches = match_records([], [product("d1", "x", "B")], overrides=load_overrides(path))
+    assert matches == []
+
+
+def test_missing_overrides_file_is_fine(tmp_path):
+    assert load_overrides(tmp_path / "nope.jsonl") == ({}, set())
+
+
+def test_comments_and_blank_lines_are_ignored(tmp_path):
+    path = tmp_path / "e.jsonl"
+    path.write_text(
+        '# una nota\n\n{"verdict": "different", "a": {"sku": "1"}, "b": {"sku": "2"}}\n',
+        encoding="utf-8",
+    )
+    assert load_overrides(path) == ({}, {("1", "2")})
+
+
+def test_malformed_override_names_the_line(tmp_path):
+    path = tmp_path / "e.jsonl"
+    path.write_text('{"verdict": "equivalent"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="e.jsonl:1"):
+        load_overrides(path)
+
+
+def test_unknown_verdict_is_rejected(tmp_path):
+    path = tmp_path / "e.jsonl"
+    path.write_text('{"verdict": "quizas", "a": {"sku": "1"}, "b": {"sku": "2"}}\n', "utf-8")
+    with pytest.raises(ValueError, match="verdict must be"):
+        load_overrides(path)
+
+
+def test_write_equivalences_roundtrip(tmp_path):
+    import json as jsonlib
+
+    mercadona = [product("m1", "Leche entera Asturiana", "Asturiana",
+                         unit_size=1.0, size_format="l")]
+    dia = [product("d1", "Leche entera Asturiana 1 L", "Asturiana")]
+    path = write_equivalences(match_records(mercadona, dia), tmp_path / "out.jsonl")
+
+    rows = [jsonlib.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["a"]["sku"] == "m1"
+    assert rows[0]["b"]["sku"] == "d1"
+    assert rows[0]["method"] == "brand-size-name"

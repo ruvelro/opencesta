@@ -1,0 +1,306 @@
+"""Deterministic matching of national-brand products across chains.
+
+This is level (b) of the cascade: brand + pack size + name overlap. It is cheap,
+explainable and needs no model. It only covers products whose brand exists in
+both chains — own brands (Hacendado vs Dia) have no shared brand token and are
+left to the later, more expensive levels.
+
+Level (a), matching by EAN, is not implemented on purpose: Dia exposes no EAN at
+all (0 of 5503 products), so there is nothing to join on.
+
+Deliberate omission: price is never an input to matching. If similar prices made
+two products more likely to be judged equivalent, "this product is cheaper at X"
+would become unfalsifiable — the matcher would only ever surface pairs that
+already agree. Price is what we measure, so it must stay out of the decision.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+# Words that carry no distinguishing meaning in a product title.
+STOPWORDS = frozenset([
+    "de", "del", "la", "el", "los", "las", "con", "sin", "y", "a", "en", "para", "al",
+    "un", "una", "pack", "lote", "formato", "tamano", "bolsa", "caja", "botella",
+    "brik", "tarrina", "bandeja", "envase", "unidad", "unidades", "ud", "uds",
+    "aprox", "aproximado",
+])
+
+# "pack 6 x 1 L", "12 x 330 ml", "330 g", "1,5 L"
+_MULTI_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
+_SINGLE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
+
+# Everything normalized to kilograms or litres so the two chains are comparable.
+_TO_BASE = {"kg": 1.0, "g": 0.001, "l": 1.0, "ml": 0.001, "cl": 0.01}
+_BASE_UNIT = {"kg": "kg", "g": "kg", "l": "L", "ml": "L", "cl": "L"}
+
+
+def strip_accents(text: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
+
+def tokenize(text: str, brand: str | None = None) -> frozenset[str]:
+    """Significant words of a title, with the brand and any size text removed.
+
+    The brand is dropped because every candidate pair already shares it, so it
+    would inflate every score equally without separating anything.
+    """
+    cleaned = strip_accents(text.lower())
+    cleaned = _MULTI_RE.sub(" ", cleaned)
+    cleaned = _SINGLE_RE.sub(" ", cleaned)
+    brand_tokens = set()
+    if brand:
+        brand_tokens = {t for t in re.split(r"[^a-z0-9]+", strip_accents(brand.lower())) if t}
+    words = re.split(r"[^a-z0-9]+", cleaned)
+    return frozenset(
+        w for w in words if len(w) > 2 and w not in STOPWORDS and w not in brand_tokens
+    )
+
+
+def parse_size(text: str) -> tuple[float, str] | None:
+    """Total quantity stated in a title, normalized to kg or L.
+
+    "pack 6 x 1 L" -> (6.0, "L");  "12 x 330 ml" -> (3.96, "L");  "330 g" -> (0.33, "kg")
+    """
+    cleaned = strip_accents(text.lower())
+    multi = _MULTI_RE.search(cleaned)
+    if multi:
+        count = float(multi.group(1).replace(",", "."))
+        each = float(multi.group(2).replace(",", "."))
+        unit = multi.group(3)
+        return round(count * each * _TO_BASE[unit], 4), _BASE_UNIT[unit]
+    single = _SINGLE_RE.search(cleaned)
+    if single:
+        amount = float(single.group(1).replace(",", "."))
+        unit = single.group(2)
+        return round(amount * _TO_BASE[unit], 4), _BASE_UNIT[unit]
+    return None
+
+
+def record_size(record: dict[str, Any]) -> tuple[float, str] | None:
+    """Pack size of a record, from its explicit fields when it has them.
+
+    Mercadona states size in `unit_size`/`size_format` and keeps it out of the
+    title; Dia does the opposite. Preferring the fields keeps Mercadona's
+    same-named-different-size rows (384 of 4338) distinguishable.
+    """
+    size, fmt = record.get("unit_size"), record.get("size_format")
+    if size and fmt and fmt.lower() in _TO_BASE:
+        return round(float(size) * _TO_BASE[fmt.lower()], 4), _BASE_UNIT[fmt.lower()]
+    return parse_size(record.get("display_name", ""))
+
+
+@dataclass(frozen=True, slots=True)
+class Equivalence:
+    brand: str
+    sku_a: str
+    name_a: str
+    sku_b: str
+    name_b: str
+    reference_format: str
+    size: float | None
+    score: float
+    shared_terms: tuple[str, ...]
+    method: str = "brand-size-name"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "brand": self.brand,
+            "reference_format": self.reference_format,
+            "size": self.size,
+            "score": self.score,
+            "shared_terms": list(self.shared_terms),
+            "a": {"sku": self.sku_a, "name": self.name_a},
+            "b": {"sku": self.sku_b, "name": self.name_b},
+        }
+
+
+def load_for_matching(
+    prices_dir: Path,
+    a: tuple[str, str],
+    b: tuple[str, str],
+    date: str | None = None,
+) -> tuple[tuple[list[dict], list[dict]], str]:
+    """Load one snapshot per chain for the newest date both of them have.
+
+    Brands are taken from the enriched catalog when the chain keeps them there:
+    Mercadona's category listing omits brand, so matching without this join
+    would silently find nothing at all.
+    """
+    import polars as pl  # local: keeps the pure-matching helpers import-light
+
+    frames = {}
+    for chain, zone in (a, b):
+        frame = pl.read_parquet(prices_dir / f"chain={chain}" / f"zone={zone}" / "**" / "*.parquet")
+        catalog_path = prices_dir / "catalog" / f"{chain}.parquet"
+        if catalog_path.exists():
+            catalog = pl.read_parquet(catalog_path).select("sku", "brand").unique(subset="sku")
+            frame = frame.drop("brand").join(catalog, on="sku", how="left")
+        frames[(chain, zone)] = frame
+
+    dates = set.intersection(*(set(f["captured_at"].to_list()) for f in frames.values()))
+    if not dates:
+        raise ValueError("the two chains share no snapshot date")
+    chosen = date or max(dates)
+    if chosen not in dates:
+        raise ValueError(f"date={chosen!r} not shared; available: {', '.join(sorted(dates))}")
+
+    return (
+        frames[a].filter(pl.col("captured_at") == chosen).to_dicts(),
+        frames[b].filter(pl.col("captured_at") == chosen).to_dicts(),
+    ), chosen
+
+
+def load_overrides(path: Path) -> tuple[dict[tuple[str, str], str], set[tuple[str, str]]]:
+    """Read community corrections from a JSONL file.
+
+    Two kinds of line, both keyed by `{"a": {"sku": ...}, "b": {"sku": ...}}`:
+      {"verdict": "equivalent", ...}  force this pair
+      {"verdict": "different",  ...}  forbid this pair
+
+    Human corrections are permanent and win over anything computed. This is the
+    part a closed project cannot have: one person's fix helps everyone, forever.
+    """
+    forced: dict[tuple[str, str], str] = {}
+    forbidden: set[tuple[str, str]] = set()
+    if not path.exists():
+        return forced, forbidden
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            row = json.loads(line)
+            pair = (str(row["a"]["sku"]), str(row["b"]["sku"]))
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError(f"{path}:{number}: malformed override ({exc})") from exc
+        if row.get("verdict") == "equivalent":
+            forced[pair] = row.get("note", "")
+        elif row.get("verdict") == "different":
+            forbidden.add(pair)
+        else:
+            raise ValueError(f"{path}:{number}: verdict must be 'equivalent' or 'different'")
+    return forced, forbidden
+
+
+def write_equivalences(equivalences: list[Equivalence], path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for equivalence in equivalences:
+            handle.write(json.dumps(equivalence.as_dict(), ensure_ascii=False) + "\n")
+    return path
+
+
+def score_pair(tokens_a: frozenset[str], tokens_b: frozenset[str]) -> float:
+    """Jaccard overlap of the distinguishing words. 1.0 means identical wording."""
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return round(len(tokens_a & tokens_b) / len(tokens_a | tokens_b), 3)
+
+
+def sizes_agree(a: tuple[float, str] | None, b: tuple[float, str] | None) -> bool:
+    """Same unit and within 2% — enough for rounding, not enough to cross pack sizes."""
+    if a is None or b is None:
+        return False
+    if a[1] != b[1]:
+        return False
+    larger = max(a[0], b[0])
+    return larger > 0 and abs(a[0] - b[0]) / larger <= 0.02
+
+
+def match_records(
+    records_a: list[dict[str, Any]],
+    records_b: list[dict[str, Any]],
+    min_score: float = 0.5,
+    require_size: bool = True,
+    overrides: tuple[dict[tuple[str, str], str], set[tuple[str, str]]] | None = None,
+) -> list[Equivalence]:
+    """Pair up products of the same national brand across two chains.
+
+    Each product on either side is used at most once: the best-scoring pair wins,
+    so one Mercadona row cannot claim every Dia variant of the same product.
+    Community overrides are applied first and are never overruled.
+    """
+    forced, forbidden = overrides or ({}, set())
+    by_sku_a = {str(r["sku"]): r for r in records_a}
+    by_sku_b = {str(r["sku"]): r for r in records_b}
+
+    equivalences: list[Equivalence] = []
+    used_a: set[str] = set()
+    used_b: set[str] = set()
+    for (sku_a, sku_b), note in forced.items():
+        record, other = by_sku_a.get(sku_a), by_sku_b.get(sku_b)
+        if record is None or other is None:
+            continue  # A product left the catalog; the override waits for its return.
+        used_a.add(sku_a)
+        used_b.add(sku_b)
+        size = record_size(record)
+        equivalences.append(
+            Equivalence(
+                brand=record.get("brand") or "",
+                sku_a=sku_a,
+                name_a=record["display_name"],
+                sku_b=sku_b,
+                name_b=other["display_name"],
+                reference_format=record.get("reference_format") or "",
+                size=size[0] if size else None,
+                score=1.0,
+                shared_terms=(note,) if note else (),
+                method="community-override",
+            )
+        )
+
+    prepared_b: dict[tuple[str, str], list[tuple[dict, frozenset, Any]]] = {}
+    for record in records_b:
+        brand, fmt = record.get("brand"), record.get("reference_format")
+        if not brand or not fmt:
+            continue
+        key = (brand.strip().lower(), fmt)
+        prepared_b.setdefault(key, []).append(
+            (record, tokenize(record["display_name"], brand), record_size(record))
+        )
+
+    scored: list[tuple[float, dict, dict, frozenset, Any]] = []
+    for record in records_a:
+        brand, fmt = record.get("brand"), record.get("reference_format")
+        if not brand or not fmt:
+            continue
+        tokens_a = tokenize(record["display_name"], brand)
+        size_a = record_size(record)
+        for other, tokens_b, size_b in prepared_b.get((brand.strip().lower(), fmt), []):
+            if (str(record["sku"]), str(other["sku"])) in forbidden:
+                continue
+            if require_size and not sizes_agree(size_a, size_b):
+                continue
+            score = score_pair(tokens_a, tokens_b)
+            if score >= min_score:
+                scored.append((score, record, other, tokens_a & tokens_b, size_a))
+
+    scored.sort(key=lambda row: row[0], reverse=True)
+    for score, record, other, shared, size in scored:
+        if str(record["sku"]) in used_a or str(other["sku"]) in used_b:
+            continue
+        used_a.add(str(record["sku"]))
+        used_b.add(str(other["sku"]))
+        equivalences.append(
+            Equivalence(
+                brand=record["brand"],
+                sku_a=record["sku"],
+                name_a=record["display_name"],
+                sku_b=other["sku"],
+                name_b=other["display_name"],
+                reference_format=record["reference_format"],
+                size=size[0] if size else None,
+                score=score,
+                shared_terms=tuple(sorted(shared)),
+            )
+        )
+    return equivalences
