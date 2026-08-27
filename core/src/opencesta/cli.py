@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from pathlib import Path
 
 from opencesta.adapters import ADAPTERS
 from opencesta.enrich import enrich_catalog
 from opencesta.history import diff
+from opencesta.ine import compare, fetch_series, span_series
 from opencesta.snapshot import snapshot
 
 
@@ -33,6 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     zone.add_argument("postal_code")
     zone.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
 
+    inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
+    inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
+    inf.add_argument("--zone", required=True)
+    inf.add_argument("--prices", type=Path, default=Path("data"))
+    inf.add_argument("--since", default=None)
+    inf.add_argument("--until", default=None)
+
     dif = sub.add_parser("diff", help="compare two snapshots: price moves, new and delisted SKUs")
     dif.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
     dif.add_argument("--zone", required=True)
@@ -54,6 +63,39 @@ def main(argv: list[str] | None = None) -> int:
         print(ADAPTERS[args.chain]().zone_for_postal_code(args.postal_code))
     elif args.command == "diff":
         _print_diff(diff(args.prices, args.chain, args.zone, args.since, args.until), args.top)
+    elif args.command == "inflation":
+        return _print_inflation(
+            diff(args.prices, args.chain, args.zone, args.since, args.until)
+        )
+    return 0
+
+
+def _print_inflation(result: dict) -> int:
+    since, until = result["since"], result["until"]
+    days = (dt.date.fromisoformat(until) - dt.date.fromisoformat(since)).days
+    basket = result["basket_pct"]
+    print(f"{since} -> {until}  ({days} días, {result['tracked']} productos comparables)")
+    print(f"tu cesta: {basket:+.2f}%")
+
+    choice = span_series(days)
+    if choice is None:
+        print(
+            f"\nSin comparación con el INE: {days} días no se corresponde con ninguna "
+            "serie oficial.\nHacen falta ~30 días de histórico para la variación "
+            "mensual, o ~365 para la anual."
+        )
+        return 0
+
+    series, _ = choice
+    rows = fetch_series(series, last=1)
+    if not rows:
+        print("\nEl INE no devolvió datos para esa serie.")
+        return 1
+    official = rows[-1]
+    verdict = compare(basket, official["value"])
+    label = "mensual" if series == "monthly" else "anual"
+    print(f"IPC de alimentación ({label}, {official['period']}): {official['value']:+.2f}%")
+    print(f"\ntu cesta va {verdict['gap_pct']:+.2f} puntos {verdict['verdict']}")
     return 0
 
 

@@ -21,11 +21,11 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | ✅ 0 | Esqueleto, licencia, CI, política de datos |
 | ✅ 1 | Adaptador Mercadona + snapshot diario + Parquet publicado |
 | 2 | Parser de tickets local-first + dashboard personal |
-| 3 | Dia + Alcampo/Carrefour + zonificación real |
+| 🔨 3 | Dia ✅ · Alcampo/Carrefour · zonificación real de Dia |
 | 4 | Motor de equivalencias + overrides comunitarios (`equivalences.jsonl`) |
 | 5 | Optimizador de cesta explicable |
 | 6 | MCP server + carrito pre-rellenado |
-| 7 | Alertas de precio + tu inflación real vs IPC del INE |
+| 🔨 7 | Tu inflación real vs IPC del INE ✅ · alertas de precio |
 
 ## Estructura
 
@@ -78,6 +78,16 @@ uv run opencesta diff --zone vlc1 --prices ../data
 cambios de precio: 119 | nuevos: 23 | descatalogados: 18
 variación del catálogo comparable: -0,06%
 ```
+
+Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
+
+```bash
+uv run opencesta inflation --zone vlc1 --prices ../data
+```
+
+Solo compara cuando los tramos son equivalentes (~30 días contra la variación mensual del
+INE, ~365 contra la anual). Con menos histórico lo dice y no compara: enfrentar una semana
+de cesta a una cifra anual del INE es la forma más fácil de publicar un titular engañoso.
 
 ## Tests
 
