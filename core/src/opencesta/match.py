@@ -123,6 +123,88 @@ class Equivalence:
         }
 
 
+# How each chain marks its own brand. Mercadona's own products carry its internal
+# GS1 prefixes; Dia names every own line "Dia <something>" (Dia Láctea, Diasol...).
+# Products with no brand at all are treated as own brand: in both chains those are
+# unbranded staples (fruit, bakery), which is exactly what we want to compare.
+_OWN_BRAND_EAN_PREFIXES = {"mercadona": ("8480000", "8402001")}
+_OWN_BRAND_NAME_PREFIXES = {"dia": ("dia",)}
+
+
+def is_own_brand(chain: str, record: dict[str, Any]) -> bool:
+    ean = record.get("ean") or ""
+    if any(ean.startswith(p) for p in _OWN_BRAND_EAN_PREFIXES.get(chain, ())):
+        return True
+    brand = (record.get("brand") or "").strip().lower()
+    if not brand:
+        return True
+    return any(brand.startswith(p) for p in _OWN_BRAND_NAME_PREFIXES.get(chain, ()))
+
+
+def own_brand_candidates(
+    records_a: list[dict[str, Any]],
+    records_b: list[dict[str, Any]],
+    min_score: float = 0.4,
+) -> list[tuple[float, dict, dict, frozenset[str]]]:
+    """Candidate pairs for own-brand products, which share neither EAN nor brand.
+
+    Brand equality cannot be required here, so the pack size carries the load:
+    products are bucketed by (reference format, exact size) and only compared
+    within a bucket. That turns 3000x2000 into a few thousand comparisons and,
+    more importantly, stops a 1 L bottle from matching a 5 L drum.
+
+    Returns every surviving candidate sorted best-first, without resolving
+    conflicts — the caller decides which ones to accept, since some need judging.
+    """
+    buckets: dict[tuple[str, float], list[tuple[dict, frozenset[str]]]] = {}
+    for record in records_b:
+        size = record_size(record)
+        fmt = record.get("reference_format")
+        if not size or not fmt:
+            continue
+        key = (fmt, round(size[0], 3))
+        buckets.setdefault(key, []).append((record, tokenize(record["display_name"],
+                                                             record.get("brand"))))
+
+    candidates = []
+    for record in records_a:
+        size = record_size(record)
+        fmt = record.get("reference_format")
+        if not size or not fmt:
+            continue
+        tokens_a = tokenize(record["display_name"], record.get("brand"))
+        for other, tokens_b in buckets.get((fmt, round(size[0], 3)), []):
+            score = score_pair(tokens_a, tokens_b)
+            if score >= min_score:
+                candidates.append((score, record, other, tokens_a & tokens_b))
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    return candidates
+
+
+def resolve_conflicts(
+    candidates: list[tuple[float, dict, dict, frozenset[str]]],
+    accept: Any,
+) -> list[tuple[float, dict, dict, frozenset[str]]]:
+    """Keep the best accepted pair per product, walking best-first.
+
+    `accept(score, record_a, record_b)` decides; it is consulted only for pairs
+    whose products are both still free, so a judge is never asked about a pair
+    that a better one has already claimed.
+    """
+    used_a: set[str] = set()
+    used_b: set[str] = set()
+    kept = []
+    for score, record, other, shared in candidates:
+        if str(record["sku"]) in used_a or str(other["sku"]) in used_b:
+            continue
+        if not accept(score, record, other):
+            continue
+        used_a.add(str(record["sku"]))
+        used_b.add(str(other["sku"]))
+        kept.append((score, record, other, shared))
+    return kept
+
+
 def load_for_matching(
     prices_dir: Path,
     a: tuple[str, str],
@@ -131,19 +213,22 @@ def load_for_matching(
 ) -> tuple[tuple[list[dict], list[dict]], str]:
     """Load one snapshot per chain for the newest date both of them have.
 
-    Brands are taken from the enriched catalog when the chain keeps them there:
-    Mercadona's category listing omits brand, so matching without this join
-    would silently find nothing at all.
+    Brand and EAN are taken from the enriched catalog when the chain keeps them
+    there: Mercadona's category listing carries neither, so without this join
+    national-brand matching finds nothing and every product looks own-brand.
     """
     import polars as pl  # local: keeps the pure-matching helpers import-light
 
+    enriched = ["brand", "ean"]
     frames = {}
     for chain, zone in (a, b):
         frame = pl.read_parquet(prices_dir / f"chain={chain}" / f"zone={zone}" / "**" / "*.parquet")
         catalog_path = prices_dir / "catalog" / f"{chain}.parquet"
         if catalog_path.exists():
-            catalog = pl.read_parquet(catalog_path).select("sku", "brand").unique(subset="sku")
-            frame = frame.drop("brand").join(catalog, on="sku", how="left")
+            catalog = (
+                pl.read_parquet(catalog_path).select("sku", *enriched).unique(subset="sku")
+            )
+            frame = frame.drop(enriched).join(catalog, on="sku", how="left")
         frames[(chain, zone)] = frame
 
     dates = set.intersection(*(set(f["captured_at"].to_list()) for f in frames.values()))

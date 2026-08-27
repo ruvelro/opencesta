@@ -97,6 +97,24 @@ tamaño, score), para que una persona pueda auditarla. Si algo está mal —o si
 par que el matcher no ve— se corrige en [`overrides.jsonl`](overrides.jsonl) y esa
 corrección gana para siempre.
 
+### Marca blanca
+
+Hacendado y la marca propia de Dia no comparten ni EAN ni marca, así que el emparejador
+solo puede comparar las palabras. Eso basta en los extremos y no basta en el medio:
+*Aceite de oliva 0,4º* y *Aceite de orujo de oliva* comparten casi todas y **no son el
+mismo producto**. Esos pares van a Claude, que decide entre equivalente, sustituto o
+distinto:
+
+```bash
+uv run opencesta match --prices ../data --own-brands --judge
+```
+
+Solo se manda la banda ambigua —lo que puntúa alto se acepta sin llamada y lo que puntúa
+bajo se descarta sin llamada— y **cada veredicto se cachea para siempre** en
+`verdicts.jsonl`, con su motivo, así que el mismo par no se paga dos veces y la caché se
+revisa en git. Sin credenciales de Anthropic el comando avisa y descarta la banda ambigua
+en lugar de adivinar.
+
 Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
 
 ```bash

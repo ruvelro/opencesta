@@ -9,7 +9,18 @@ from opencesta.adapters import ADAPTERS
 from opencesta.enrich import enrich_catalog
 from opencesta.history import diff
 from opencesta.ine import compare, fetch_series, span_series
-from opencesta.match import load_for_matching, load_overrides, match_records, write_equivalences
+from opencesta.judge import VerdictCache, judge_pairs, judging_is_available
+from opencesta.match import (
+    Equivalence,
+    is_own_brand,
+    load_for_matching,
+    load_overrides,
+    match_records,
+    own_brand_candidates,
+    record_size,
+    resolve_conflicts,
+    write_equivalences,
+)
 from opencesta.snapshot import snapshot
 
 
@@ -50,6 +61,16 @@ def main(argv: list[str] | None = None) -> int:
                      help="community corrections; they always win")
     mat.add_argument("--out", type=Path, default=None, help="write the pairs as JSONL")
     mat.add_argument("--min-score", type=float, default=0.5)
+    mat.add_argument("--own-brands", action="store_true",
+                     help="also pair own-brand products (no shared brand or EAN)")
+    mat.add_argument("--judge", action="store_true",
+                     help="send ambiguous own-brand pairs to Claude; verdicts are cached")
+    mat.add_argument("--verdicts", type=Path, default=Path("verdicts.jsonl"),
+                     help="cache of judgements, safe to commit")
+    mat.add_argument("--accept-above", type=float, default=0.75,
+                     help="own-brand score accepted without judging")
+    mat.add_argument("--consider-above", type=float, default=0.4,
+                     help="own-brand score below which pairs are dropped outright")
 
     inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
     inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
@@ -122,9 +143,76 @@ def _run_match(args) -> int:
     print(f"mismo precio: {same} | más barato en {args.a}: {cheaper_a} "
           f"| más barato en {args.b}: {cheaper_b}")
 
+    if args.own_brands:
+        equivalences += _match_own_brands(args, records_a, records_b)
+
     if args.out:
         print(f"\n{write_equivalences(equivalences, args.out)}")
     return 0
+
+
+def _match_own_brands(args, records_a: list[dict], records_b: list[dict]) -> list:
+    """Own brands: no EAN, no shared brand. High scores are taken, the middle is judged."""
+    own_a = [r for r in records_a if is_own_brand(args.a, r)]
+    own_b = [r for r in records_b if is_own_brand(args.b, r)]
+    candidates = own_brand_candidates(own_a, own_b, min_score=args.consider_above)
+    print(f"\nmarca propia: {len(own_a)} x {len(own_b)} productos, "
+          f"{len(candidates)} pares candidatos")
+
+    cache = VerdictCache(args.verdicts)
+    judged: dict[tuple[str, str], object] = {}
+    counts = {"auto": 0, "equivalent": 0, "substitute": 0, "different": 0}
+
+    if args.judge:
+        # Judge only pairs that survive conflict resolution, so we never pay to
+        # judge a pair that a better-scoring one has already claimed.
+        provisional = resolve_conflicts(candidates, lambda score, x, y: True)
+        ambiguous = [
+            (x["display_name"], y["display_name"])
+            for score, x, y, _ in provisional
+            if score < args.accept_above
+        ]
+        uncached = sum(1 for pair in set(ambiguous) if cache.get(*pair) is None)
+        print(f"  {len(ambiguous)} en la banda ambigua ({uncached} sin veredicto en caché)")
+        if uncached and not judging_is_available():
+            print("  sin credenciales de Anthropic: se omite el juez y se descarta la banda")
+        else:
+            judged = judge_pairs(ambiguous, cache)
+
+    def accept(score: float, record: dict, other: dict) -> bool:
+        if score >= args.accept_above:
+            counts["auto"] += 1
+            return True
+        verdict = judged.get((record["display_name"], other["display_name"]))
+        if verdict is None:
+            return False  # Unjudged ambiguity is dropped, never guessed.
+        counts[verdict.verdict] += 1
+        return verdict.verdict in ("equivalent", "substitute")
+
+    kept = resolve_conflicts(candidates, accept)
+    print(f"  aceptados: {counts['auto']} por score | {counts['equivalent']} equivalentes "
+          f"y {counts['substitute']} sustitutos por el juez | "
+          f"{counts['different']} descartados por el juez")
+
+    equivalences = []
+    for score, record, other, shared in kept:
+        verdict = judged.get((record["display_name"], other["display_name"]))
+        size = record_size(record)
+        equivalences.append(
+            Equivalence(
+                brand=f"{record.get('brand') or '?'} / {other.get('brand') or '?'}",
+                sku_a=str(record["sku"]),
+                name_a=record["display_name"],
+                sku_b=str(other["sku"]),
+                name_b=other["display_name"],
+                reference_format=record.get("reference_format") or "",
+                size=size[0] if size else None,
+                score=score,
+                shared_terms=(verdict.reason,) if verdict else tuple(sorted(shared)),
+                method=f"own-brand-{verdict.verdict}" if verdict else "own-brand-score",
+            )
+        )
+    return equivalences
 
 
 def _print_inflation(result: dict) -> int:

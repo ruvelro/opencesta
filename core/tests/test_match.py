@@ -1,10 +1,13 @@
 import pytest
 
 from opencesta.match import (
+    is_own_brand,
     load_overrides,
     match_records,
+    own_brand_candidates,
     parse_size,
     record_size,
+    resolve_conflicts,
     score_pair,
     sizes_agree,
     tokenize,
@@ -234,3 +237,74 @@ def test_write_equivalences_roundtrip(tmp_path):
     assert rows[0]["a"]["sku"] == "m1"
     assert rows[0]["b"]["sku"] == "d1"
     assert rows[0]["method"] == "brand-size-name"
+
+
+def test_is_own_brand_by_mercadona_ean_prefix():
+    assert is_own_brand("mercadona", {"ean": "8480000100054", "brand": "Hacendado"})
+    assert not is_own_brand("mercadona", {"ean": "8411700005837", "brand": "Puleva"})
+
+
+def test_is_own_brand_by_dia_name_prefix():
+    assert is_own_brand("dia", {"brand": "Dia Láctea"})
+    assert is_own_brand("dia", {"brand": "Diasol"})
+    assert not is_own_brand("dia", {"brand": "Danone"})
+
+
+def test_unbranded_products_count_as_own_brand():
+    """Unbranded staples (fruit, bakery) are exactly what we want to compare."""
+    assert is_own_brand("mercadona", {"brand": None, "ean": None})
+    assert is_own_brand("dia", {"brand": ""})
+
+
+def test_own_brand_candidates_ignore_brand_but_not_size():
+    hacendado = product("m1", "Leche entera Hacendado", "Hacendado",
+                        unit_size=1.0, size_format="l")
+    same_size = product("d1", "Leche entera Dia Láctea 1 L", "Dia Láctea")
+    other_size = product("d2", "Leche entera Dia Láctea pack 6 x 1 L", "Dia Láctea")
+
+    candidates = own_brand_candidates([hacendado], [same_size, other_size])
+    assert [c[2]["sku"] for c in candidates] == ["d1"]
+    assert candidates[0][0] == 1.0
+
+
+def test_own_brand_candidates_are_sorted_best_first():
+    mercadona = [product("m1", "Tomate frito Hacendado", "Hacendado",
+                         fmt="kg", unit_size=400.0, size_format="g")]
+    dia = [
+        product("d1", "Tomate frito con aceite de oliva Dia 400 g", "Dia", fmt="kg"),
+        product("d2", "Tomate frito Dia 400 g", "Dia", fmt="kg"),
+    ]
+    scores = [c[0] for c in own_brand_candidates(mercadona, dia)]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_resolve_conflicts_keeps_the_best_free_pair():
+    a1 = product("m1", "x", "B")
+    b1, b2 = product("d1", "x", "B"), product("d2", "x", "B")
+    candidates = [(0.9, a1, b1, frozenset()), (0.8, a1, b2, frozenset())]
+
+    kept = resolve_conflicts(candidates, lambda *_: True)
+    assert [k[2]["sku"] for k in kept] == ["d1"]
+
+
+def test_resolve_conflicts_does_not_consult_accept_for_claimed_products():
+    """A judge must never be paid to rule on a pair a better one already won."""
+    a1 = product("m1", "x", "B")
+    b1, b2 = product("d1", "x", "B"), product("d2", "x", "B")
+    asked = []
+
+    def accept(score, x, y):
+        asked.append(y["sku"])
+        return True
+
+    resolve_conflicts([(0.9, a1, b1, frozenset()), (0.8, a1, b2, frozenset())], accept)
+    assert asked == ["d1"]
+
+
+def test_rejected_pair_frees_nothing_it_did_not_claim():
+    a1, a2 = product("m1", "x", "B"), product("m2", "x", "B")
+    b1 = product("d1", "x", "B")
+    candidates = [(0.9, a1, b1, frozenset()), (0.8, a2, b1, frozenset())]
+
+    kept = resolve_conflicts(candidates, lambda score, x, y: score < 0.85)
+    assert [(k[1]["sku"], k[2]["sku"]) for k in kept] == [("m2", "d1")]
