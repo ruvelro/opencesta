@@ -19,7 +19,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | Fase | Entregable |
 |---|---|
 | ✅ 0 | Esqueleto, licencia, CI, política de datos |
-| 🔨 1 | Adaptador Mercadona + snapshot diario + Parquet publicado |
+| ✅ 1 | Adaptador Mercadona + snapshot diario + Parquet publicado |
 | 2 | Parser de tickets local-first + dashboard personal |
 | 3 | Dia + Alcampo/Carrefour + zonificación real |
 | 4 | Motor de equivalencias + overrides comunitarios (`equivalences.jsonl`) |
@@ -56,6 +56,27 @@ Para descubrir tu zona a partir del código postal:
 
 ```bash
 uv run opencesta zone 28001   # → mad3
+```
+
+El listado por categorías no trae EAN ni marca: eso vive en el endpoint de detalle. El
+enriquecimiento es incremental y reanudable, así que el catálogo se construye en varias
+pasadas lentas sin castigar su infraestructura:
+
+```bash
+uv run opencesta enrich --zone vlc1 --prices ../data --limit 300
+```
+
+Con dos snapshots o más, `diff` compara fechas: qué subió, qué bajó, qué entró y qué
+desapareció del catálogo.
+
+```bash
+uv run opencesta diff --zone vlc1 --prices ../data
+```
+
+```
+2026-08-20 -> 2026-08-27  (4315 productos en ambas fechas)
+cambios de precio: 119 | nuevos: 23 | descatalogados: 18
+variación del catálogo comparable: -0,06%
 ```
 
 ## Tests
