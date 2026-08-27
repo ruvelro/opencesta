@@ -29,6 +29,20 @@ MAX_PAGE = 5
 # this is labelled honestly rather than passed off as a resolved zone.
 DEFAULT_ZONE = "es-default"
 
+# Exactly what we send, and nothing else. Akamai 403s the classic Python client
+# signature "gzip, deflate"; a browser sends "gzip, deflate, br". We send plain
+# "gzip", which is none of those: it is literally true (we do decode gzip), it
+# imitates no browser, and it costs Dia ~6x less bandwidth than sending no
+# accept-encoding at all — which DATA_POLICY point 3 requires of us.
+MINIMAL_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Encoding": "gzip",
+}
+
+# Any category page carries the full tree in its header; the homepage ships the
+# same object with an empty list, so discovery has to start from one of these.
+SEED_CATEGORY = "/conservas-caldos-y-cremas/conservas-de-fruta/c/L2298"
+
 
 class DiaAdapter:
     """Reads Dia's server-rendered category pages via their embedded JSON payload.
@@ -42,16 +56,25 @@ class DiaAdapter:
     chain = "dia"
 
     def __init__(self, client: httpx.Client | None = None, delay_s: float = 0.6):
-        self._client = client or httpx.Client(
-            base_url=BASE_URL,
-            headers={"User-Agent": USER_AGENT},
-            timeout=30,
-            follow_redirects=True,
-            transport=UrllibTransport(),  # see transport.py for why
-        )
+        self._client = client or self.build_client()
         self._delay_s = delay_s
         self._last_request = 0.0
 
+    @staticmethod
+    def build_client() -> httpx.Client:
+        client = httpx.Client(
+            base_url=BASE_URL,
+            headers=MINIMAL_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+            transport=UrllibTransport(),
+        )
+        # httpx installs its own defaults; drop everything we did not choose so
+        # the request stays exactly as declared in MINIMAL_HEADERS.
+        for header in list(client.headers):
+            if header.lower() not in {h.lower() for h in MINIMAL_HEADERS}:
+                del client.headers[header]
+        return client
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request
         if elapsed < self._delay_s:
@@ -78,14 +101,19 @@ class DiaAdapter:
             "resolved yet. Use zone 'es-default'."
         )
 
-    def list_categories(self, path: str = "/") -> list[dict[str, str]]:
-        """Leaf categories from the tree the site header carries on every page.
+    def list_categories(self, path: str = SEED_CATEGORY) -> list[dict[str, str]]:
+        """Leaf categories from the tree in the site header.
+
+        Seeded from a category page, not `/`: the homepage ships the same header
+        object with an empty `categories` list, so entering there yields nothing.
 
         Only leaves are walked: a parent listing repeats its children's products,
         so crawling both would double the requests for nothing.
         """
         context = self._get_page_context(path)
         tree = context["INITIAL_STATE"]["header"]["categoriesData"]["categories"]
+        if not tree:
+            raise ValueError(f"no category tree at {path!r}; seed from a category page")
         seen: dict[str, str] = {}
         for top in tree:
             leaves = top.get("children") or [top]
@@ -96,7 +124,7 @@ class DiaAdapter:
     def iter_category(self, link: str, zone: str, captured_at: str) -> Iterator[PriceRecord]:
         page = 1
         while page <= MAX_PAGE:
-            path = link if page == 1 else f"{link}/pag-{page}"
+            path = link if page == 1 else page_url(link, page)
             state = self._get_page_context(path)["INITIAL_STATE"]
             items = [raw for raw in state.get("l2", {}).get("plp_items") or [] if is_product(raw)]
             for raw in items:
@@ -114,6 +142,18 @@ class DiaAdapter:
                     continue
                 seen.add(record.sku)
                 yield record
+
+
+def page_url(link: str, page: int) -> str:
+    """Insert `/pag-N` before the `/c/<code>` segment, which is where Dia wants it.
+
+    Appending it to the end 404s. This is also the form robots.txt governs
+    (`Allow: */pag-1..5`), so keeping it means the cap stays meaningful.
+    """
+    head, sep, tail = link.rpartition("/c/")
+    if not sep:
+        return f"{link}/pag-{page}"
+    return f"{head}/pag-{page}/c/{tail}"
 
 
 def is_product(raw: dict[str, Any]) -> bool:

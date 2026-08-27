@@ -53,6 +53,25 @@ def test_headers_pass_through_untouched(captured):
     assert sent.get("accept-encoding") == client.headers.get("accept-encoding")
 
 
+def test_gzip_body_is_decompressed(monkeypatch):
+    import gzip as gziplib
+
+    payload = gziplib.compress(b"<html>compressed</html>")
+
+    class Gzipped(FakeResponse):
+        headers: ClassVar[dict] = {"content-encoding": "gzip", "content-length": "999"}
+
+    monkeypatch.setattr(
+        "opencesta.transport.urllib.request.urlopen",
+        lambda req, timeout=None: Gzipped(payload),
+    )
+    resp = httpx.Client(transport=UrllibTransport()).get("https://example.test/x")
+
+    assert resp.text == "<html>compressed</html>"
+    # Stale encoding metadata must not survive, or httpx would decode twice.
+    assert "content-encoding" not in resp.headers
+
+
 def test_http_error_becomes_response_not_exception(monkeypatch):
     def raise_403(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b"no"))

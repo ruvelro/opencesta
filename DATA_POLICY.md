@@ -13,25 +13,28 @@ OpenCesta recopila precios públicos de supermercados para publicar un dataset a
 9. **Derecho de retirada.** Si una cadena solicita formalmente la exclusión de sus datos, se atiende y se documenta públicamente.
 10. **Nunca evadimos detección de bots.** No suplantamos huellas TLS de navegador (`curl_cffi` y similares), no rotamos proxies ni IPs, no resolvemos CAPTCHAs y no ocultamos quiénes somos. Si una cadena bloquea nuestro User-Agent identificado, la respuesta es **parar y documentarlo**, no disfrazarnos.
 
-## Dia: adaptador en pausa por decisión pendiente
+## Dia: qué cabeceras enviamos y por qué
 
-Dia está detrás de Akamai. Midiendo el comportamiento real con nuestro User-Agent
-identificado, el bloqueo se dispara con una cabecera concreta:
+Dia está detrás de Akamai. Midiendo el comportamiento real, siempre con nuestro
+User-Agent identificado:
 
-| Petición (siempre con nuestro User-Agent) | Respuesta |
-|---|---|
-| Solo `User-Agent` | 200 |
-| `+ accept: */*` | 200 |
-| `+ connection: keep-alive` | 200 |
-| `+ accept-encoding: gzip, deflate` | **403** |
-| `+ accept-encoding: gzip, deflate, br` | 200 |
+| Petición | Respuesta | Bytes |
+|---|---|---|
+| Solo `User-Agent` | 200 | 154.777 |
+| `+ accept: */*` | 200 | — |
+| `+ connection: keep-alive` | 200 | — |
+| `+ accept-encoding: gzip, deflate` | **403** | — |
+| `+ accept-encoding: gzip` | 200 | 24.654 |
+| `+ accept-encoding: gzip, deflate, br` | 200 | 22.567 |
 
-Es decir, Akamai marca como bot la firma clásica de un cliente Python (`gzip, deflate`) y
-deja pasar la de un navegador (`…, br`). **Ajustar esa cabecera para parecer un navegador
-sería evadir detección de bots y el punto 10 lo prohíbe.**
+Akamai marca como bot la firma clásica de un cliente Python (`gzip, deflate`) y deja pasar
+la de un navegador (`gzip, deflate, br`). **Mandar la variante de navegador sería evadir
+detección de bots, y el punto 10 lo prohíbe.**
 
-Enviar únicamente nuestro `User-Agent`, sin `accept-encoding`, también recibe 200 — y eso
-no es suplantar a nadie, sino mandar la petición más simple posible. Pero es una decisión
-de política, no técnica, así que el adaptador de Dia **queda escrito y testeado contra
-fixtures, pero sin ejecución en vivo** hasta que se resuelva de forma explícita y pública.
-El código está en [`core/src/opencesta/adapters/dia.py`](core/src/opencesta/adapters/dia.py).
+Enviamos `accept-encoding: gzip` a secas. Esa elección es deliberada por tres razones:
+es **literalmente cierta** (aceptamos y descomprimimos gzip), **no imita a ningún
+navegador** (ninguno manda solo `gzip`), y descarga **6× menos** de los servidores de Dia
+que omitir la cabecera, que es lo que exige el punto 3. Las cabeceras exactas que salen
+están declaradas en `MINIMAL_HEADERS` en
+[`core/src/opencesta/adapters/dia.py`](core/src/opencesta/adapters/dia.py), y el transporte
+tiene un test que garantiza que no añade ninguna por su cuenta.

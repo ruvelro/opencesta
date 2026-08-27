@@ -1,9 +1,34 @@
 from __future__ import annotations
 
+import gzip
 import urllib.error
 import urllib.request
+import zlib
 
 import httpx
+
+
+def _to_response(status: int, headers, body: bytes) -> httpx.Response:
+    """Decode the body and drop the encoding headers that no longer describe it.
+
+    urllib hands back the compressed bytes; httpx.Response treats `content` as
+    already-decoded, so leaving `content-encoding` in place would make it try to
+    decode twice.
+    """
+    items = list(headers)
+    encoding = next(
+        (v.lower().strip() for k, v in items if k.lower() == "content-encoding"), None
+    )
+    if encoding == "gzip":
+        body = gzip.decompress(body)
+    elif encoding == "deflate":
+        body = zlib.decompress(body, -zlib.MAX_WBITS)
+    kept = [
+        (k, v)
+        for k, v in items
+        if k.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+    ]
+    return httpx.Response(status, headers=kept, content=body)
 
 
 class UrllibTransport(httpx.BaseTransport):
@@ -28,13 +53,9 @@ class UrllibTransport(httpx.BaseTransport):
         )
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                return httpx.Response(
-                    resp.status, headers=list(resp.headers.items()), content=resp.read()
-                )
+                return _to_response(resp.status, resp.headers.items(), resp.read())
         except urllib.error.HTTPError as exc:
-            return httpx.Response(
-                exc.code, headers=list(exc.headers.items()), content=exc.read()
-            )
+            return _to_response(exc.code, exc.headers.items(), exc.read())
         except urllib.error.URLError as exc:
             raise httpx.ConnectError(str(exc.reason), request=request) from exc
         except TimeoutError as exc:

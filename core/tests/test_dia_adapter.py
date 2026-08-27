@@ -9,7 +9,7 @@ import json
 import httpx
 import pytest
 
-from opencesta.adapters.dia import DiaAdapter, parse_product
+from opencesta.adapters.dia import DiaAdapter, page_url, parse_product
 from opencesta.models import PriceRecord
 
 
@@ -92,8 +92,8 @@ def test_iter_category_paginates_and_respects_robots_cap(fixture):
 
     list(make_adapter(handler).iter_category("/x/c/L1", "es-default", "2026-08-27"))
     # robots.txt allows pag-1..5 only; we must stop there even if Dia offers more.
-    assert paths == ["/x/c/L1", "/x/c/L1/pag-2", "/x/c/L1/pag-3",
-                     "/x/c/L1/pag-4", "/x/c/L1/pag-5"]
+    assert paths == ["/x/c/L1", "/x/pag-2/c/L1", "/x/pag-3/c/L1",
+                     "/x/pag-4/c/L1", "/x/pag-5/c/L1"]
 
 
 def test_iter_products_dedupes_across_categories(fixture):
@@ -102,6 +102,16 @@ def test_iter_products_dedupes_across_categories(fixture):
         "es-default", "2026-08-27"))
     skus = [r.sku for r in records]
     assert skus and len(skus) == len(set(skus))
+
+
+def test_empty_category_tree_is_explicit(fixture):
+    """The homepage ships the header with an empty list — fail loudly, not silently."""
+    payload = json.loads(json.dumps(fixture("dia", "category_L2298")))
+    payload["INITIAL_STATE"]["header"]["categoriesData"]["categories"] = []
+    adapter = make_adapter(lambda r: as_page(payload))
+
+    with pytest.raises(ValueError, match="no category tree"):
+        adapter.list_categories("/")
 
 
 def test_missing_payload_is_explicit():
@@ -114,3 +124,9 @@ def test_zone_for_postal_code_refuses_to_fake_it():
     adapter = make_adapter(lambda r: httpx.Response(200))
     with pytest.raises(NotImplementedError, match="es-default"):
         adapter.zone_for_postal_code("28001")
+
+
+def test_page_url_puts_pag_before_the_code():
+    # Appending /pag-N to the end 404s on the live site.
+    assert page_url("/a/b/c/L2329", 2) == "/a/b/pag-2/c/L2329"
+    assert page_url("/no-code-here", 3) == "/no-code-here/pag-3"
