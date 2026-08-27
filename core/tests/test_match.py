@@ -308,3 +308,29 @@ def test_rejected_pair_frees_nothing_it_did_not_claim():
 
     kept = resolve_conflicts(candidates, lambda score, x, y: score < 0.85)
     assert [(k[1]["sku"], k[2]["sku"]) for k in kept] == [("m2", "d1")]
+
+
+def test_weight_range_is_not_read_as_pack_size():
+    """"pañales de 10-15 kg" states the baby's weight, not what is in the packet."""
+    assert parse_size("Pañales bebé talla 4 Deliplus de 10-15 kg") is None
+    assert parse_size("Pañales 8-15 kg talla 4 Dia Planeta Bebé 44 unidades") == (44.0, "ud")
+
+
+def test_unit_counts_are_parsed():
+    assert parse_size("Bolsa de basura 30 L cubo alto 20 unidades") == (30.0, "L")
+    assert parse_size("Bolsas de basura 20 unidades") == (20.0, "ud")
+    assert parse_size("Cápsulas de café 10 cápsulas") == (10.0, "ud")
+
+
+def test_record_size_reads_unit_counts_from_fields():
+    record = product("m1", "Bolsas de basura", "Bosque Verde", fmt="ud",
+                     unit_size=20.0, size_format="ud")
+    assert record_size(record) == (20.0, "ud")
+
+
+def test_nappies_of_different_counts_no_longer_pair():
+    mercadona = [product("m1", "Pañales bebé talla 4 Deliplus de 10-15 kg", "Deliplus",
+                         fmt="ud", unit_size=30.0, size_format="ud")]
+    dia = [product("d1", "Pañales 8-15 kg talla 4 Dia Planeta Bebé 44 unidades", "Dia",
+                   fmt="ud")]
+    assert own_brand_candidates(mercadona, dia) == []

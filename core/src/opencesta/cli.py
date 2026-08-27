@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import sys
+import webbrowser
 from pathlib import Path
 
 from opencesta.adapters import ADAPTERS
 from opencesta.enrich import enrich_catalog
 from opencesta.history import diff
 from opencesta.ine import compare, fetch_series, span_series
-from opencesta.judge import VerdictCache, judge_pairs, judging_is_available
+from opencesta.judge import VERDICTS, Verdict, VerdictCache, judge_pairs, judging_is_available
 from opencesta.match import (
     Equivalence,
     is_own_brand,
@@ -21,6 +23,7 @@ from opencesta.match import (
     resolve_conflicts,
     write_equivalences,
 )
+from opencesta.review import build_rows, write_review
 from opencesta.snapshot import snapshot
 
 
@@ -71,6 +74,27 @@ def main(argv: list[str] | None = None) -> int:
                      help="own-brand score accepted without judging")
     mat.add_argument("--consider-above", type=float, default=0.4,
                      help="own-brand score below which pairs are dropped outright")
+    mat.add_argument("--dump-ambiguous", type=Path, default=None,
+                     help="write the pairs needing judgement and stop, instead of calling out")
+
+    imp = sub.add_parser(
+        "import-verdicts",
+        help="load judgements produced elsewhere into the cache (no API key needed)",
+    )
+    imp.add_argument("path", type=Path, help="JSONL with a, b, verdict and reason")
+    imp.add_argument("--verdicts", type=Path, default=Path("verdicts.jsonl"))
+    imp.add_argument("--judged-by", default="manual",
+                     help="who produced these verdicts; recorded with each one")
+
+    rev = sub.add_parser("review", help="build a local page for eyeballing the matches")
+    rev.add_argument("--equivalences", type=Path, default=Path("equivalences.jsonl"))
+    rev.add_argument("--prices", type=Path, default=Path("data"))
+    rev.add_argument("--a", default="mercadona", choices=sorted(ADAPTERS))
+    rev.add_argument("--zone-a", default="vlc1")
+    rev.add_argument("--b", default="dia", choices=sorted(ADAPTERS))
+    rev.add_argument("--zone-b", default="es-default")
+    rev.add_argument("--out", type=Path, default=Path("review.html"))
+    rev.add_argument("--open", action="store_true", help="open it in the browser")
 
     inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
     inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
@@ -102,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         _print_diff(diff(args.prices, args.chain, args.zone, args.since, args.until), args.top)
     elif args.command == "match":
         return _run_match(args)
+    elif args.command == "import-verdicts":
+        return _import_verdicts(args)
+    elif args.command == "review":
+        return _run_review(args)
     elif args.command == "inflation":
         return _print_inflation(
             diff(args.prices, args.chain, args.zone, args.since, args.until)
@@ -151,6 +179,63 @@ def _run_match(args) -> int:
     return 0
 
 
+def _run_review(args) -> int:
+    if not args.equivalences.exists():
+        print(f"no existe {args.equivalences}; ejecuta antes 'opencesta match --out'")
+        return 1
+    equivalences = [
+        json.loads(line)
+        for line in args.equivalences.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    (records_a, records_b), date = load_for_matching(
+        args.prices, (args.a, args.zone_a), (args.b, args.zone_b)
+    )
+    rows = build_rows(
+        equivalences,
+        {str(r["sku"]): r for r in records_a},
+        {str(r["sku"]): r for r in records_b},
+    )
+    subtitle = (
+        f"{args.a}/{args.zone_a} vs {args.b}/{args.zone_b} · {date} · "
+        f"precios por unidad de referencia"
+    )
+    path = write_review(rows, args.out, subtitle)
+    print(f"{path}  ({len(rows)} equivalencias, "
+          f"{sum(1 for r in rows if r['suspect'])} marcadas para revisar)")
+    if args.open:
+        webbrowser.open(path.resolve().as_uri())
+    return 0
+
+
+def _import_verdicts(args) -> int:
+    """Load judgements made anywhere — by a person, or by Claude in a chat.
+
+    Keeps the judge's output separable from its source: the cache does not care
+    who decided, only that the decision is recorded against the exact wording.
+    """
+    cache = VerdictCache(args.verdicts)
+    added = skipped = 0
+    for number, line in enumerate(args.path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        row = json.loads(line)
+        for field in ("a", "b", "verdict", "reason"):
+            if field not in row:
+                raise ValueError(f"{args.path}:{number}: falta el campo {field!r}")
+        if row["verdict"] not in VERDICTS:
+            raise ValueError(f"{args.path}:{number}: veredicto inválido {row['verdict']!r}")
+        if cache.get(row["a"], row["b"]) is not None:
+            skipped += 1
+            continue
+        cache.put(row["a"], row["b"],
+                  Verdict(row["verdict"], row["reason"], row.get("model", args.judged_by)))
+        added += 1
+    print(f"{added} veredictos nuevos, {skipped} ya estaban en caché ({args.verdicts})")
+    return 0
+
+
 def _match_own_brands(args, records_a: list[dict], records_b: list[dict]) -> list:
     """Own brands: no EAN, no shared brand. High scores are taken, the middle is judged."""
     own_a = [r for r in records_a if is_own_brand(args.a, r)]
@@ -163,6 +248,27 @@ def _match_own_brands(args, records_a: list[dict], records_b: list[dict]) -> lis
     judged: dict[tuple[str, str], object] = {}
     counts = {"auto": 0, "equivalent": 0, "substitute": 0, "different": 0}
 
+    if args.dump_ambiguous:
+        provisional = resolve_conflicts(candidates, lambda score, x, y: True)
+        rows = [
+            {
+                "a": x["display_name"],
+                "b": y["display_name"],
+                "score": score,
+                "size": f"{record_size(x)[0]} {x.get('reference_format')}",
+                "sku_a": str(x["sku"]),
+                "sku_b": str(y["sku"]),
+            }
+            for score, x, y, _ in provisional
+            if score < args.accept_above and cache.get(x["display_name"], y["display_name"]) is None
+        ]
+        args.dump_ambiguous.parent.mkdir(parents=True, exist_ok=True)
+        with args.dump_ambiguous.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"  {len(rows)} pares sin juzgar -> {args.dump_ambiguous}")
+        return []
+
     if args.judge:
         # Judge only pairs that survive conflict resolution, so we never pay to
         # judge a pair that a better-scoring one has already claimed.
@@ -172,10 +278,14 @@ def _match_own_brands(args, records_a: list[dict], records_b: list[dict]) -> lis
             for score, x, y, _ in provisional
             if score < args.accept_above
         ]
-        uncached = sum(1 for pair in set(ambiguous) if cache.get(*pair) is None)
-        print(f"  {len(ambiguous)} en la banda ambigua ({uncached} sin veredicto en caché)")
+        uncached = [pair for pair in dict.fromkeys(ambiguous) if cache.get(*pair) is None]
+        print(f"  {len(ambiguous)} en la banda ambigua ({len(uncached)} sin veredicto en caché)")
         if uncached and not judging_is_available():
-            print("  sin credenciales de Anthropic: se omite el juez y se descarta la banda")
+            # Fall back to what is already judged rather than throwing it away:
+            # the cache is the valuable part and it does not need credentials.
+            print(f"  sin credenciales de Anthropic: se usan los veredictos en caché y se "
+                  f"descartan los {len(uncached)} sin juzgar")
+            judged = judge_pairs([p for p in ambiguous if p not in set(uncached)], cache)
         else:
             judged = judge_pairs(ambiguous, cache)
 

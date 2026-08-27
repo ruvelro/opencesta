@@ -9,3 +9,4 @@ node_modules/
 .next/
 .DS_Store
 equivalences.jsonl
+review.html

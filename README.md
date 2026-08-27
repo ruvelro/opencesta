@@ -111,9 +111,33 @@ uv run opencesta match --prices ../data --own-brands --judge
 
 Solo se manda la banda ambigua —lo que puntúa alto se acepta sin llamada y lo que puntúa
 bajo se descarta sin llamada— y **cada veredicto se cachea para siempre** en
-`verdicts.jsonl`, con su motivo, así que el mismo par no se paga dos veces y la caché se
-revisa en git. Sin credenciales de Anthropic el comando avisa y descarta la banda ambigua
-en lugar de adivinar.
+[`verdicts.jsonl`](verdicts.jsonl), con su motivo, así que el mismo par no se paga dos
+veces y la caché se revisa en git. Sin credenciales de Anthropic el comando usa lo que ya
+haya en caché y descarta solo lo que quede sin juzgar, en vez de adivinar.
+
+Los veredictos no tienen por qué venir de la API. `--dump-ambiguous` saca los pares
+pendientes a un fichero, y `import-verdicts` mete de vuelta lo que decida quien sea —una
+persona, o Claude en una conversación— sin necesidad de credenciales:
+
+```bash
+uv run opencesta match --own-brands --dump-ambiguous pendientes.jsonl
+uv run opencesta import-verdicts juzgados.jsonl --judged-by "quien lo decidió"
+```
+
+### Revisar los emparejamientos
+
+Cada equivalencia afirma que dos productos son lo mismo, y una equivocada corrompe en
+silencio toda comparación construida encima. `review` genera una página local para verlas:
+
+```bash
+uv run opencesta review --out review.html --open
+```
+
+Se abre con doble clic —sin servidor, sin build, y los precios no salen de tu máquina—,
+ordena primero las sospechosas (diferencia de precio desmedida, sin tamaño o con score
+flojo) y cada fila tiene un botón que copia al portapapeles la línea lista para pegar en
+`overrides.jsonl`. Ese es el bucle: mirar, detectar, corregir, y la corrección vale para
+siempre.
 
 Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
 

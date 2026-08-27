@@ -33,7 +33,12 @@ STOPWORDS = frozenset([
 
 # "pack 6 x 1 L", "12 x 330 ml", "330 g", "1,5 L"
 _MULTI_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
-_SINGLE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
+# The leading guard rejects the tail of a range: "pañales de 10-15 kg" states the
+# baby's weight, not the pack size, and reading it as one paired a Mercadona
+# nappy with a Dia nappy of a different count purely because both said "15 kg".
+_SINGLE_RE = re.compile(r"(?<![\d,.-])(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
+# Counted goods (nappies, bin bags, capsules) state a unit count instead.
+_COUNT_RE = re.compile(r"(?<![\d,.-])(\d+)\s*(?:unidades|unidad|uds|ud|c[aá]psulas)\b")
 
 # Everything normalized to kilograms or litres so the two chains are comparable.
 _TO_BASE = {"kg": 1.0, "g": 0.001, "l": 1.0, "ml": 0.001, "cl": 0.01}
@@ -81,6 +86,9 @@ def parse_size(text: str) -> tuple[float, str] | None:
         amount = float(single.group(1).replace(",", "."))
         unit = single.group(2)
         return round(amount * _TO_BASE[unit], 4), _BASE_UNIT[unit]
+    count = _COUNT_RE.search(cleaned)
+    if count:
+        return float(count.group(1)), "ud"
     return None
 
 
@@ -92,8 +100,12 @@ def record_size(record: dict[str, Any]) -> tuple[float, str] | None:
     same-named-different-size rows (384 of 4338) distinguishable.
     """
     size, fmt = record.get("unit_size"), record.get("size_format")
-    if size and fmt and fmt.lower() in _TO_BASE:
-        return round(float(size) * _TO_BASE[fmt.lower()], 4), _BASE_UNIT[fmt.lower()]
+    if size and fmt:
+        key = fmt.lower()
+        if key in _TO_BASE:
+            return round(float(size) * _TO_BASE[key], 4), _BASE_UNIT[key]
+        if key in ("ud", "uds", "unidad", "unidades"):
+            return float(size), "ud"
     return parse_size(record.get("display_name", ""))
 
 
