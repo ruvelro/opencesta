@@ -148,6 +148,17 @@ jobs:
           files = list(root.rglob("*.parquet"))
           if not files:
               sys.exit("no se descargó ningún parquet")
+          # Read each file alone first: a combined read reports "File out of
+          # specification" without saying which file, which is useless at 3am.
+          bad = []
+          for f in sorted(files):
+              try:
+                  pl.read_parquet(f)
+              except Exception as exc:
+                  bad.append(f"{f.relative_to(root)}: {type(exc).__name__} {exc}")
+          if bad:
+              sys.exit("ficheros ilegibles:\n  " + "\n  ".join(bad))
+
           df = pl.read_parquet(root / "**" / "*.parquet")
           nulls = [c for c, t in df.schema.items() if t == pl.Null]
           if nulls:
