@@ -112,11 +112,58 @@ jobs:
           Zonas incluidas: ${ZONES}." \
             || gh release upload "$TAG" prices.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
 
+  verify:
+    # The dataset's one promise is that it can be queried in a single pass. That
+    # broke silently once (each snapshot inferred its own dtypes, so a column a
+    # chain never fills was stored as Null and the types clashed across chains
+    # and dates). Check the published artifact itself, not just what we wrote.
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: Download the last two releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p check
+          for TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 2 \
+                       --json tagName --jq '.[].tagName'); do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern prices.tar.gz --output "check/$TAG.tar.gz"
+            tar -xzf "check/$TAG.tar.gz" -C check
+          done
+      - name: Read every chain and date together
+        working-directory: core
+        run: |
+          uv sync
+          uv run python - <<'PY'
+          import sys
+          from pathlib import Path
+          import polars as pl
+          from opencesta.models import SCHEMA
+
+          root = Path("../check/data")
+          files = list(root.rglob("*.parquet"))
+          if not files:
+              sys.exit("no se descargó ningún parquet")
+          df = pl.read_parquet(root / "**" / "*.parquet")
+          nulls = [c for c, t in df.schema.items() if t == pl.Null]
+          if nulls:
+              sys.exit(f"columnas sin tipo: {', '.join(nulls)}")
+          missing = [c for c in SCHEMA if c not in df.columns]
+          if missing:
+              sys.exit(f"faltan columnas del esquema: {', '.join(missing)}")
+          print(f"{len(files)} ficheros, {df.height} filas, "
+                f"fechas {sorted(df['captured_at'].unique().to_list())}")
+          PY
+
   alert:
     # A failed snapshot used to be silent: the contract test guards schema drift,
     # but nothing watched the capture itself, so a lost day only showed up if
     # somebody opened the Actions tab.
-    needs: [contract, snapshot, publish]
+    needs: [contract, snapshot, publish, verify]
     if: ${{ always() && contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     permissions:

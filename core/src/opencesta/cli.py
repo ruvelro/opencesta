@@ -23,6 +23,7 @@ from opencesta.match import (
     resolve_conflicts,
     write_equivalences,
 )
+from opencesta.retype import retype_tree
 from opencesta.review import build_rows, write_review
 from opencesta.snapshot import snapshot
 
@@ -86,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("--judged-by", default="manual",
                      help="who produced these verdicts; recorded with each one")
 
+    ret = sub.add_parser(
+        "retype", help="repair Parquet written before the schema was declared"
+    )
+    ret.add_argument("root", type=Path, help="directory holding the snapshots")
+
     rev = sub.add_parser("review", help="build a local page for eyeballing the matches")
     rev.add_argument("--equivalences", type=Path, default=Path("equivalences.jsonl"))
     rev.add_argument("--prices", type=Path, default=Path("data"))
@@ -130,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
         return _import_verdicts(args)
     elif args.command == "review":
         return _run_review(args)
+    elif args.command == "retype":
+        fixed = retype_tree(args.root)
+        for path, columns in fixed.items():
+            print(f"  {path.relative_to(args.root)}: {', '.join(columns)}")
+        print(f"{len(fixed)} ficheros reparados")
     elif args.command == "inflation":
         return _print_inflation(
             diff(args.prices, args.chain, args.zone, args.since, args.until)
