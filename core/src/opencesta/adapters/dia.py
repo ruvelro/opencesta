@@ -10,6 +10,7 @@ import httpx
 
 from opencesta import USER_AGENT
 from opencesta.models import PriceRecord
+from opencesta.retry import with_retry
 from opencesta.transport import UrllibTransport
 
 BASE_URL = "https://www.dia.es"
@@ -75,6 +76,7 @@ class DiaAdapter:
             if header.lower() not in {h.lower() for h in MINIMAL_HEADERS}:
                 del client.headers[header]
         return client
+
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request
         if elapsed < self._delay_s:
@@ -82,13 +84,16 @@ class DiaAdapter:
         self._last_request = time.monotonic()
 
     def _get_page_context(self, path: str) -> dict[str, Any]:
-        self._throttle()
-        resp = self._client.get(path)
-        resp.raise_for_status()
-        match = PAGE_CONTEXT_RE.search(resp.text)
-        if not match:
-            raise ValueError(f"no vike_pageContext payload at {path!r}")
-        return json.loads(match.group(1))
+        def once() -> dict[str, Any]:
+            self._throttle()
+            resp = self._client.get(path)
+            resp.raise_for_status()
+            match = PAGE_CONTEXT_RE.search(resp.text)
+            if not match:
+                raise ValueError(f"no vike_pageContext payload at {path!r}")
+            return json.loads(match.group(1))
+
+        return with_retry(once)
 
     def known_zones(self) -> list[str]:
         return [DEFAULT_ZONE]

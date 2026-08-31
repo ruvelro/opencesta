@@ -130,3 +130,17 @@ def test_page_url_puts_pag_before_the_code():
     # Appending /pag-N to the end 404s on the live site.
     assert page_url("/a/b/c/L2329", 2) == "/a/b/pag-2/c/L2329"
     assert page_url("/no-code-here", 3) == "/no-code-here/pag-3"
+
+
+def test_dia_snapshot_survives_a_transient_timeout(fixture, monkeypatch):
+    monkeypatch.setattr("opencesta.retry.time.sleep", lambda _: None)
+    payload = fixture("dia", "category_L2298")
+    attempts = []
+
+    def handler(request):
+        attempts.append(request.url.path)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("reset")
+        return as_page(payload)
+
+    assert make_adapter(handler).list_categories()

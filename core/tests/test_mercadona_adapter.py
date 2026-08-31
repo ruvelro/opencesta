@@ -111,3 +111,31 @@ def test_iter_products_dedupes_and_walks_all_leaves(fixture):
     skus = [r.sku for r in records]
     assert len(skus) == len(set(skus))
     assert len(skus) > 10
+
+
+def test_snapshot_survives_a_transient_timeout(fixture, monkeypatch):
+    """The 2026-08-31 failure: one ReadTimeout mid-walk killed the whole snapshot."""
+    monkeypatch.setattr("opencesta.retry.time.sleep", lambda _: None)
+    attempts = []
+
+    def handler(request):
+        attempts.append(request.url.path)
+        if len(attempts) == 2:  # blip on the second call, mid-walk
+            raise httpx.ReadTimeout("boom")
+        return httpx.Response(200, json=fixture("mercadona", "categories"))
+
+    leaves = make_adapter(handler).list_leaf_categories("alc1")
+    assert leaves  # the retry absorbed it
+
+
+def test_a_404_still_surfaces_immediately(monkeypatch):
+    monkeypatch.setattr("opencesta.retry.time.sleep", lambda _: None)
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(404)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        make_adapter(handler).get_product("nope", "vlc1")
+    assert len(calls) == 1

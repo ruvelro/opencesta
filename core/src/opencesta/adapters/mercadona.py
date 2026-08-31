@@ -8,6 +8,7 @@ import httpx
 
 from opencesta import USER_AGENT
 from opencesta.models import PriceRecord
+from opencesta.retry import with_retry
 
 BASE_URL = "https://tienda.mercadona.es/api"
 
@@ -37,10 +38,13 @@ class MercadonaAdapter:
         self._last_request = 0.0
 
     def _get(self, path: str, zone: str) -> dict[str, Any]:
-        self._throttle()
-        resp = self._client.get(path, params={"lang": "es", "wh": zone})
-        resp.raise_for_status()
-        return resp.json()
+        def once() -> dict[str, Any]:
+            self._throttle()
+            resp = self._client.get(path, params={"lang": "es", "wh": zone})
+            resp.raise_for_status()
+            return resp.json()
+
+        return with_retry(once)
 
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request

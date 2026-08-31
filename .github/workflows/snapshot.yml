@@ -48,6 +48,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 1  # one zone at a time: be gentle with their infra
+      # One flaky zone must not cancel the others. Before this, a single
+      # ReadTimeout on alc1 cancelled the in-flight Dia job and cost the whole
+      # day's dataset, including the three zones that had already succeeded.
+      fail-fast: false
       matrix:
         include:
           - chain: mercadona
@@ -76,7 +80,10 @@ jobs:
           retention-days: 30
 
   publish:
-    needs: snapshot
+    needs: [contract, snapshot]
+    # Publish whatever was captured. A partial day beats no day at all: the
+    # missing zone is visible in the release notes and returns tomorrow.
+    if: ${{ !cancelled() && needs.contract.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -88,9 +95,47 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="prices-$(date -u +%F)"
+          if [ -z "$(find data -name '*.parquet' -print -quit)" ]; then
+            echo "::error::ninguna zona produjo datos; no se publica una release vacía"
+            exit 1
+          fi
+          # Name the zones actually captured, so a partial day is visible in the
+          # release itself instead of looking complete.
+          ZONES=$(find data -name '*.parquet' | sed -E 's#.*chain=([^/]+)/zone=([^/]+)/.*#\1/\2#' \
+                  | sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g')
           tar -czf prices.tar.gz data/
           gh release create "$TAG" prices.tar.gz \
             --repo "$GITHUB_REPOSITORY" \
             --title "Precios $(date -u +%F)" \
-            --notes "Snapshot diario del dataset (Parquet particionado por chain/zone/date)." \
+            --notes "Snapshot diario del dataset (Parquet particionado por chain/zone/date).
+
+          Zonas incluidas: ${ZONES}." \
             || gh release upload "$TAG" prices.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+
+  alert:
+    # A failed snapshot used to be silent: the contract test guards schema drift,
+    # but nothing watched the capture itself, so a lost day only showed up if
+    # somebody opened the Actions tab.
+    needs: [contract, snapshot, publish]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Snapshot diario incompleto: ${new Date().toISOString().slice(0, 10)}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'snapshot-failure',
+            });
+            if (open.data.some(i => i.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title,
+              labels: ['snapshot-failure'],
+              body: `Alguna zona no se capturó hoy.\n\n[Ver la ejecución](${
+                context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${
+                context.runId})\n\nSi es un fallo de red puntual, el reintento del adaptador ya lo absorbe y mañana vuelve solo. Si se repite varios días en la misma zona, mira si la cadena ha cambiado algo.`,
+            });
