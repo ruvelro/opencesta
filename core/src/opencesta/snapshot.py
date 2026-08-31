@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 
 from opencesta.adapters import ADAPTERS
-from opencesta.models import PriceRecord
+from opencesta.models import SCHEMA, PriceRecord
 
 
 def snapshot(chain: str, zone: str, out_dir: Path, captured_at: str | None = None) -> Path:
@@ -21,11 +21,9 @@ def snapshot(chain: str, zone: str, out_dir: Path, captured_at: str | None = Non
     if not records:
         raise RuntimeError(f"snapshot for {chain}/{zone} produced 0 products")
 
-    df = pl.DataFrame(
-        [dataclasses.asdict(r) for r in records],
-        schema_overrides={c: pl.Float64 for c in
-                          ("unit_price", "reference_price", "unit_size", "tax_pct")},
-    ).select(PriceRecord.columns())
+    df = pl.DataFrame([dataclasses.asdict(r) for r in records], schema=SCHEMA).select(
+        PriceRecord.columns()
+    )
 
     target = out_dir / f"chain={chain}" / f"zone={zone}" / f"date={captured_at}"
     target.mkdir(parents=True, exist_ok=True)
