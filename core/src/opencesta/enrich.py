@@ -66,7 +66,10 @@ def enrich_catalog(
     catalog = load_catalog(catalog_path)
     known = set(catalog.filter(pl.col("chain") == chain)["sku"].to_list())
 
-    prices = pl.scan_parquet(prices_dir / f"chain={chain}" / "**" / "*.parquet")
+    # Only this zone's SKUs: the detail endpoint is queried with this warehouse,
+    # so a SKU sold only in another zone answers 404 and, never being recorded,
+    # would be re-asked every single week. In CI that was 479 of 500 requests.
+    prices = pl.scan_parquet(prices_dir / f"chain={chain}" / f"zone={zone}" / "**" / "*.parquet")
     skus = prices.select(pl.col("sku").unique().sort()).collect()["sku"].to_list()
     missing = [s for s in skus if s not in known]
     batch = missing if limit is None else missing[:limit]

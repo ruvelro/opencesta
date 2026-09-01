@@ -126,3 +126,32 @@ def test_enrich_skips_delisted_sku(tmp_path, patched_adapter):
     fetched, missing = enrich_catalog("mercadona", "vlc1", tmp_path, catalog_path)
     assert (fetched, missing) == (1, 1)
     assert load_catalog(catalog_path)["sku"].to_list() == ["1"]
+
+
+def test_only_the_requested_zone_is_enriched(tmp_path, patched_adapter):
+    """A SKU sold only in another zone 404s here and would be re-asked forever."""
+    write_prices(tmp_path, ["1"])  # zone vlc1
+    other = tmp_path / "chain=mercadona" / "zone=mad1" / "date=2026-08-27"
+    other.mkdir(parents=True)
+    records = [
+        dataclasses.asdict(
+            PriceRecord(
+                chain="mercadona", zone="mad1", sku="solo-mad1", display_name="p",
+                category="c", subcategory="s", unit_price=1.0, reference_price=1.0,
+                reference_format="L", unit_size=1.0, size_format="l", tax_pct=4.0,
+                is_pack=False, is_discounted=False, url="", captured_at="2026-08-27",
+            )
+        )
+    ]
+    pl.DataFrame(records).select(PriceRecord.columns()).write_parquet(
+        other / "prices.parquet"
+    )
+
+    asked: list[str] = []
+    patched_adapter({"1": detail("1")}, asked)
+    fetched, missing = enrich_catalog(
+        "mercadona", "vlc1", tmp_path, tmp_path / "catalog" / "mercadona.parquet"
+    )
+
+    assert asked == ["1"]  # the mad1-only SKU is never requested from vlc1
+    assert (fetched, missing) == (1, 0)
