@@ -1,6 +1,7 @@
 import pytest
 
 from opencesta.match import (
+    is_multipack,
     is_own_brand,
     load_overrides,
     match_records,
@@ -9,6 +10,7 @@ from opencesta.match import (
     record_size,
     resolve_conflicts,
     score_pair,
+    size_gap,
     sizes_agree,
     tokenize,
     write_equivalences,
@@ -334,3 +336,101 @@ def test_nappies_of_different_counts_no_longer_pair():
     dia = [product("d1", "Pañales 8-15 kg talla 4 Dia Planeta Bebé 44 unidades", "Dia",
                    fmt="ud")]
     assert own_brand_candidates(mercadona, dia) == []
+
+
+def priced(sku, name, brand, unit_price, reference_price, fmt, **kw):
+    record = product(sku, name, brand, fmt=fmt, **kw)
+    record["unit_price"] = unit_price
+    record["reference_price"] = reference_price
+    return record
+
+
+def test_size_comes_from_the_price_ratio_not_the_declared_field():
+    """Mercadona sells an 18-candle pack as `unit_size: 1.0 ud`, hiding the count."""
+    pack = priced("m1", "Vela perfumada Neroli Bosque Verde", "Bosque Verde",
+                  1.85, 0.103, "ud", unit_size=1.0, size_format="ud")
+    assert record_size(pack) == (17.961, "ud")
+
+
+def test_an_eighteen_pack_no_longer_matches_a_single_unit():
+    """The declared sizes both said "1 ud", so an 18-pack matched one candle."""
+    pack = priced("m1", "Vela perfumada Neroli Bosque Verde", "Bosque Verde",
+                  1.85, 0.103, "ud", unit_size=1.0, size_format="ud")
+    single = priced("d1", "Vela perfumada mimosa Dia Imaqe 1 unidad", "Dia Imaqe",
+                    1.89, 1.89, "ud")
+    assert own_brand_candidates([pack], [single]) == []
+
+
+def test_declared_fields_still_used_without_a_reference_price():
+    record = product("m1", "Leche", "Marca", unit_size=6.0, size_format="l")
+    assert record_size(record) == (6.0, "L")
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ((4.0, "L"), (4.0, "L"), 0.0),
+        ((4.0, "L"), (3.96, "L"), 0.01),
+        ((4.0, "L"), (4.0, "kg"), 1.0),
+        (None, (1.0, "L"), 1.0),
+    ],
+)
+def test_size_gap(a, b, expected):
+    assert size_gap(a, b) == pytest.approx(expected, abs=1e-3)
+
+
+def test_an_exact_size_beats_one_merely_within_tolerance():
+    """Two Mercadona rows share a name; the 3.96 L pack must win Dia's 3.96 L."""
+    four_litres = priced("m4", "Refresco Coca-Cola zero", "Coca-Cola", 3.80, 0.95, "L")
+    cans = priced("m396", "Refresco Coca-Cola zero", "Coca-Cola", 11.16, 2.819, "L")
+    dia_cans = priced("d1", "Coca-Cola zero 12 x 330 ml", "Coca-Cola", 9.96, 2.52, "L")
+
+    matches = match_records([four_litres, cans], [dia_cans], min_score=0.4)
+    assert [m.sku_a for m in matches] == ["m396"]
+
+
+def test_is_multipack_from_the_flag_or_the_title():
+    assert is_multipack({"is_pack": True, "display_name": "Aceitunas"})
+    assert is_multipack({"display_name": "Aceitunas rellenas Dia 3 x 50 g"})
+    assert not is_multipack({"is_pack": False, "display_name": "Aceitunas Dia 150 g"})
+
+
+def test_a_multipack_prefers_the_other_multipack():
+    """Both chains list a single jar and a three-pack under near-identical names.
+
+    Nothing but pack-ness separates them — and price must not, or "cheaper at X"
+    stops being falsifiable. Crossed, these two pairs invented a +71% and a -42%.
+    """
+    single = priced("m1", "Aceitunas verdes rellenas de anchoa Hacendado", "Hacendado",
+                    1.05, 7.0, "kg")
+    single["is_pack"] = False
+    pack = priced("m2", "Aceitunas verdes rellenas de anchoa Hacendado", "Hacendado",
+                  1.80, 12.0, "kg")
+    pack["is_pack"] = True
+    dia_pack = priced("d1", "Aceitunas rellenas de anchoa Dia Vegecampo 3 x 50 g",
+                      "Dia Vegecampo", 1.80, 12.0, "kg")
+    dia_single = priced("d2", "Aceitunas rellenas de anchoa Dia Vegecampo 150 g",
+                        "Dia Vegecampo", 1.05, 7.0, "kg")
+
+    candidates = own_brand_candidates([single, pack], [dia_pack, dia_single])
+    paired = {
+        a["sku"]: b["sku"]
+        for _, a, b, _ in resolve_conflicts(candidates, lambda *_: True)
+    }
+    assert paired["m2"] == "d1"  # pack with pack
+    assert paired["m1"] == "d2"  # single with single
+
+
+def test_an_override_also_binds_own_brand_matching(tmp_path):
+    """Own brands are most of the catalogue; an override that skipped them would
+    look obeyed and quietly not be."""
+    path = tmp_path / "overrides.jsonl"
+    path.write_text(
+        '{"verdict": "different", "a": {"sku": "m1"}, "b": {"sku": "d1"}}\n', encoding="utf-8"
+    )
+    a = priced("m1", "Bolsa de rafia", "", 0.65, 0.65, "ud")
+    b = priced("d1", "Bolsa de rafia isotérmica Dia", "Dia", 1.90, 1.90, "ud")
+
+    assert own_brand_candidates([a], [b]) != []
+    _, forbidden = load_overrides(path)
+    assert own_brand_candidates([a], [b], forbidden=forbidden) == []

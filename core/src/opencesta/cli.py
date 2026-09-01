@@ -251,7 +251,10 @@ def _match_own_brands(args, records_a: list[dict], records_b: list[dict]) -> lis
     """Own brands: no EAN, no shared brand. High scores are taken, the middle is judged."""
     own_a = [r for r in records_a if is_own_brand(args.a, r)]
     own_b = [r for r in records_b if is_own_brand(args.b, r)]
-    candidates = own_brand_candidates(own_a, own_b, min_score=args.consider_above)
+    _, forbidden = load_overrides(args.overrides)
+    candidates = own_brand_candidates(
+        own_a, own_b, min_score=args.consider_above, forbidden=forbidden
+    )
     print(f"\nmarca propia: {len(own_a)} x {len(own_b)} productos, "
           f"{len(candidates)} pares candidatos")
 

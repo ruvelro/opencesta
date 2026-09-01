@@ -15,3 +15,5 @@
 # a aplicarse si el producto regresa.
 #
 # Manda un PR. Se revisa a ojo: una línea, una decisión, con su motivo.
+{"verdict": "different", "a": {"sku": "24529"}, "b": {"sku": "261959"}, "note": "Misma marca pero denominaciones de origen distintas: Ribera del Duero frente a Toro."}
+{"verdict": "different", "a": {"sku": "2439"}, "b": {"sku": "273366"}, "note": "Una es una bolsa de rafia normal y la otra isotérmica; no cumplen la misma función."}

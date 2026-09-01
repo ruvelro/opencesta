@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from opencesta import USER_AGENT
+from opencesta.match import _MULTI_RE, strip_accents
 from opencesta.models import PriceRecord
 from opencesta.retry import with_retry
 from opencesta.transport import UrllibTransport
@@ -183,7 +184,7 @@ def parse_product(raw: dict[str, Any], *, zone: str, captured_at: str) -> PriceR
         unit_size=None,  # Dia states net content only as free text in the title.
         size_format=None,
         tax_pct=None,
-        is_pack=False,
+        is_pack=bool(_MULTI_RE.search(strip_accents(raw['display_name'].lower()))),
         is_discounted=bool(prices.get("discount_percentage")),
         url=f"{BASE_URL}{url}" if url.startswith("/") else url,
         captured_at=captured_at,

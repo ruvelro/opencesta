@@ -93,12 +93,24 @@ def parse_size(text: str) -> tuple[float, str] | None:
 
 
 def record_size(record: dict[str, Any]) -> tuple[float, str] | None:
-    """Pack size of a record, from its explicit fields when it has them.
+    """How much of the product you get, in the units its reference price uses.
 
-    Mercadona states size in `unit_size`/`size_format` and keeps it out of the
-    title; Dia does the opposite. Preferring the fields keeps Mercadona's
-    same-named-different-size rows (384 of 4338) distinguishable.
+    Derived from `unit_price / reference_price` whenever both are present. That
+    ratio is the size the price is actually quoted against, which is the only
+    size two chains can be compared on — and it is right where the declared
+    fields are not. Mercadona sells an 18-candle pack as `unit_size: 1.0 ud`
+    with the count hidden in a field we do not capture, so the declared size
+    said "1 unit" and the pack matched Dia's single candle, 18x its price.
+
+    Falls back to the declared fields, then to the title, when a record carries
+    no usable reference price.
     """
+    unit_price = record.get("unit_price")
+    reference_price = record.get("reference_price")
+    reference_format = record.get("reference_format")
+    if unit_price and reference_price and reference_format:
+        return round(unit_price / reference_price, 3), reference_format
+
     size, fmt = record.get("unit_size"), record.get("size_format")
     if size and fmt:
         key = fmt.lower()
@@ -157,6 +169,7 @@ def own_brand_candidates(
     records_a: list[dict[str, Any]],
     records_b: list[dict[str, Any]],
     min_score: float = 0.4,
+    forbidden: set[tuple[str, str]] | None = None,
 ) -> list[tuple[float, dict, dict, frozenset[str]]]:
     """Candidate pairs for own-brand products, which share neither EAN nor brand.
 
@@ -165,9 +178,14 @@ def own_brand_candidates(
     within a bucket. That turns 3000x2000 into a few thousand comparisons and,
     more importantly, stops a 1 L bottle from matching a 5 L drum.
 
+    Pairs a human has marked "different" in the overrides never surface. A
+    correction has to hold here too: own brands are most of the catalogue, so an
+    override that only bound national brands would look obeyed and not be.
+
     Returns every surviving candidate sorted best-first, without resolving
     conflicts — the caller decides which ones to accept, since some need judging.
     """
+    forbidden = forbidden or set()
     buckets: dict[tuple[str, float], list[tuple[dict, frozenset[str]]]] = {}
     for record in records_b:
         size = record_size(record)
@@ -186,11 +204,18 @@ def own_brand_candidates(
             continue
         tokens_a = tokenize(record["display_name"], record.get("brand"))
         for other, tokens_b in buckets.get((fmt, round(size[0], 3)), []):
+            if (str(record["sku"]), str(other["sku"])) in forbidden:
+                continue
             score = score_pair(tokens_a, tokens_b)
             if score >= min_score:
-                candidates.append((score, record, other, tokens_a & tokens_b))
-    candidates.sort(key=lambda row: row[0], reverse=True)
-    return candidates
+                candidates.append((
+                    score,
+                    is_multipack(record) == is_multipack(other),
+                    -size_gap(size, record_size(other)),
+                    record, other, tokens_a & tokens_b,
+                ))
+    candidates.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    return [(score, a, b, shared) for score, _, _, a, b, shared in candidates]
 
 
 def resolve_conflicts(
@@ -303,6 +328,27 @@ def score_pair(tokens_a: frozenset[str], tokens_b: frozenset[str]) -> float:
     return round(len(tokens_a & tokens_b) / len(tokens_a | tokens_b), 3)
 
 
+def is_multipack(record: dict[str, Any]) -> bool:
+    """Whether the product is several containers sold together.
+
+    Mercadona flags it; Dia only says so in the title ("3 x 50 g"). It matters
+    because a chain can list the single jar and the three-pack under one name,
+    and then the only thing telling them apart is the price — which must not
+    decide a match, or "cheaper at X" stops being falsifiable.
+    """
+    if record.get("is_pack"):
+        return True
+    return bool(_MULTI_RE.search(strip_accents((record.get("display_name") or "").lower())))
+
+
+def size_gap(a: tuple[float, str] | None, b: tuple[float, str] | None) -> float:
+    """Relative difference between two sizes; 0.0 when they are identical."""
+    if a is None or b is None or a[1] != b[1]:
+        return 1.0
+    larger = max(a[0], b[0])
+    return 0.0 if larger == 0 else abs(a[0] - b[0]) / larger
+
+
 def sizes_agree(a: tuple[float, str] | None, b: tuple[float, str] | None) -> bool:
     """Same unit and within 2% — enough for rounding, not enough to cross pack sizes."""
     if a is None or b is None:
@@ -379,10 +425,19 @@ def match_records(
                 continue
             score = score_pair(tokens_a, tokens_b)
             if score >= min_score:
-                scored.append((score, record, other, tokens_a & tokens_b, size_a))
+                scored.append((
+                    score,
+                    is_multipack(record) == is_multipack(other),
+                    -size_gap(size_a, size_b),
+                    record, other, tokens_a & tokens_b, size_a,
+                ))
 
-    scored.sort(key=lambda row: row[0], reverse=True)
-    for score, record, other, shared, size in scored:
+    # Best score first, and among equal scores the closest size. Without the
+    # tie-break, two Mercadona rows sharing a name let an approximate size win:
+    # a 4 L bottle pack claimed Dia's 12x330 ml cans (3.96 L, inside tolerance)
+    # while the exact 3.96 L pack sat unmatched, inventing a 165% price gap.
+    scored.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    for score, _, _, record, other, shared, size in scored:
         if str(record["sku"]) in used_a or str(other["sku"]) in used_b:
             continue
         used_a.add(str(record["sku"]))
