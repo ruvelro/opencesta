@@ -14,7 +14,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 
 ## Estado
 
-**Fase 1 en curso**: adaptador de Mercadona sobre su API JSON interna, con zonificación por warehouse (`vlc1`, `mad1`, `bcn1`, `alc1`…) y snapshot diario a Parquet.
+**Dataset diario en marcha** desde el 28 de agosto de 2026: Mercadona en cuatro zonas (`vlc1`, `mad1`, `bcn1`, `alc1`) y Dia, publicado cada día como Parquet en [Releases](https://github.com/ruvelro/opencesta/releases). Emparejamiento entre cadenas, juez para la marca blanca y optimizador de cesta funcionando; falta la web, el servidor MCP y más cadenas.
 
 | Fase | Entregable |
 |---|---|
