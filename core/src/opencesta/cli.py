@@ -8,6 +8,15 @@ import webbrowser
 from pathlib import Path
 
 from opencesta.adapters import ADAPTERS
+from opencesta.basket import (
+    DEFAULT_TERMS,
+    Terms,
+    build_offers,
+    explain,
+    find_item,
+    optimize,
+    parse_list,
+)
 from opencesta.enrich import enrich_catalog
 from opencesta.history import diff
 from opencesta.ine import compare, fetch_series, span_series
@@ -102,6 +111,26 @@ def main(argv: list[str] | None = None) -> int:
     rev.add_argument("--out", type=Path, default=Path("review.html"))
     rev.add_argument("--open", action="store_true", help="open it in the browser")
 
+    bas = sub.add_parser("basket", help="price a shopping list at each chain and say where to buy")
+    bas.add_argument("list", type=Path, help="text file, one product per line ('2x leche' works)")
+    bas.add_argument("--prices", type=Path, default=Path("data"))
+    bas.add_argument("--equivalences", type=Path, default=Path("equivalences.jsonl"))
+    bas.add_argument("--a", default="mercadona", choices=sorted(ADAPTERS))
+    bas.add_argument("--zone-a", default="vlc1")
+    bas.add_argument("--b", default="dia", choices=sorted(ADAPTERS))
+    bas.add_argument("--zone-b", default="es-default")
+    # Delivery terms change and differ by postcode; these are starting values,
+    # pass your own. A wrong minimum turns a good plan into a phantom one.
+    bas.add_argument("--delivery-a", type=float, default=DEFAULT_TERMS["mercadona"][0])
+    bas.add_argument("--min-a", type=float, default=DEFAULT_TERMS["mercadona"][1])
+    bas.add_argument("--free-a", type=float, default=DEFAULT_TERMS["mercadona"][2],
+                     help="subtotal from which delivery is free (omit if never)")
+    bas.add_argument("--delivery-b", type=float, default=DEFAULT_TERMS["dia"][0])
+    bas.add_argument("--min-b", type=float, default=DEFAULT_TERMS["dia"][1])
+    bas.add_argument("--free-b", type=float, default=DEFAULT_TERMS["dia"][2])
+    bas.add_argument("--split-penalty", type=float, default=0.0,
+                     help="euros you'd pay to avoid two deliveries (0 = only real costs)")
+
     inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
     inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
     inf.add_argument("--zone", required=True)
@@ -136,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         return _import_verdicts(args)
     elif args.command == "review":
         return _run_review(args)
+    elif args.command == "basket":
+        return _run_basket(args)
     elif args.command == "retype":
         fixed = retype_tree(args.root)
         for path, columns in fixed.items():
@@ -187,6 +218,42 @@ def _run_match(args) -> int:
 
     if args.out:
         print(f"\n{write_equivalences(equivalences, args.out)}")
+    return 0
+
+
+def _run_basket(args) -> int:
+    if not args.equivalences.exists():
+        print(f"no existe {args.equivalences}; ejecuta antes 'opencesta match --out'")
+        return 1
+    wanted = parse_list(args.list.read_text(encoding="utf-8"))
+    if not wanted:
+        print("la lista está vacía")
+        return 1
+    equivalences = [
+        json.loads(line)
+        for line in args.equivalences.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    (records_a, records_b), date = load_for_matching(
+        args.prices, (args.a, args.zone_a), (args.b, args.zone_b)
+    )
+    pairs, singles = build_offers(records_a, records_b, equivalences, args.a, args.b)
+
+    items, not_found = [], []
+    for query, quantity in wanted:
+        found = find_item(query, quantity, pairs, singles)
+        (items if found else not_found).append(found or (query, quantity))
+    if not items:
+        print("no se ha encontrado ninguno de los productos de la lista")
+        return 1
+
+    terms = {
+        args.a: Terms(args.a, args.delivery_a, args.min_a, args.free_a),
+        args.b: Terms(args.b, args.delivery_b, args.min_b, args.free_b),
+    }
+    plans = optimize(items, terms, args.split_penalty)
+    print(f"{args.a}/{args.zone_a} vs {args.b}/{args.zone_b} · precios del {date}\n")
+    print(explain(items, plans, terms, not_found))
     return 0
 
 

@@ -40,6 +40,10 @@ _SINGLE_RE = re.compile(r"(?<![\d,.-])(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b")
 # Counted goods (nappies, bin bags, capsules) state a unit count instead.
 _COUNT_RE = re.compile(r"(?<![\d,.-])(\d+)\s*(?:unidades|unidad|uds|ud|c[aá]psulas)\b")
 
+# A number standing on its own: "talla 4", "nº 6.6", "85%", "20 unidades". The
+# guards exclude the halves of a range, so the "4" in "4-8 kg" is not a lone 4.
+_STANDALONE_NUMBER = re.compile(r"(?<![\d,.\-])(\d+(?:[.,]\d+)?)(?![\d,.\-]?\d)")
+
 # Everything normalized to kilograms or litres so the two chains are comparable.
 _TO_BASE = {"kg": 1.0, "g": 0.001, "l": 1.0, "ml": 0.001, "cl": 0.01}
 _BASE_UNIT = {"kg": "kg", "g": "kg", "l": "L", "ml": "L", "cl": "L"}
@@ -67,6 +71,31 @@ def tokenize(text: str, brand: str | None = None) -> frozenset[str]:
     return frozenset(
         w for w in words if len(w) > 2 and w not in STOPWORDS and w not in brand_tokens
     )
+
+
+def standalone_numbers(text: str) -> frozenset[str]:
+    """Numbers that identify a variant — "talla 4", "72%", "nº 6.6".
+
+    Size expressions are stripped first: "400 g", "58 unidades", "6 x 1 L" are
+    quantities the size logic already compares, not variant markers, and
+    treating them as such made "Pizza 4 quesos" conflict with "Pizza cuatro
+    quesos 400 g".
+    """
+    cleaned = strip_accents(text.lower())
+    for pattern in (_MULTI_RE, _SINGLE_RE, _COUNT_RE):
+        cleaned = pattern.sub(" ", cleaned)
+    return frozenset(n.replace(",", ".") for n in _STANDALONE_NUMBER.findall(cleaned))
+
+
+def numbers_conflict(name_a: str, name_b: str) -> bool:
+    """Both names state numbers and share none of them.
+
+    Word tokens drop single digits, so "talla 4" and "talla 2" looked identical
+    and Dodot size 4 was paired with Dodot size 2 — the packs happened to hold
+    the same count. A name with no numbers never conflicts: we cannot tell.
+    """
+    a, b = standalone_numbers(name_a), standalone_numbers(name_b)
+    return bool(a) and bool(b) and not (a & b)
 
 
 def parse_size(text: str) -> tuple[float, str] | None:
@@ -205,6 +234,8 @@ def own_brand_candidates(
         tokens_a = tokenize(record["display_name"], record.get("brand"))
         for other, tokens_b in buckets.get((fmt, round(size[0], 3)), []):
             if (str(record["sku"]), str(other["sku"])) in forbidden:
+                continue
+            if numbers_conflict(record["display_name"], other["display_name"]):
                 continue
             score = score_pair(tokens_a, tokens_b)
             if score >= min_score:
@@ -422,6 +453,8 @@ def match_records(
             if (str(record["sku"]), str(other["sku"])) in forbidden:
                 continue
             if require_size and not sizes_agree(size_a, size_b):
+                continue
+            if numbers_conflict(record["display_name"], other["display_name"]):
                 continue
             score = score_pair(tokens_a, tokens_b)
             if score >= min_score:

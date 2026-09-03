@@ -5,6 +5,7 @@ from opencesta.match import (
     is_own_brand,
     load_overrides,
     match_records,
+    numbers_conflict,
     own_brand_candidates,
     parse_size,
     record_size,
@@ -12,6 +13,7 @@ from opencesta.match import (
     score_pair,
     size_gap,
     sizes_agree,
+    standalone_numbers,
     tokenize,
     write_equivalences,
 )
@@ -434,3 +436,41 @@ def test_an_override_also_binds_own_brand_matching(tmp_path):
     assert own_brand_candidates([a], [b]) != []
     _, forbidden = load_overrides(path)
     assert own_brand_candidates([a], [b], forbidden=forbidden) == []
+
+
+def test_standalone_numbers_keep_variants_and_drop_sizes():
+    assert standalone_numbers("Pañales 4-8 kg talla 2") == {"2"}  # range halves excluded
+    assert standalone_numbers("talla 4 Dia 44 unidades") == {"4"}  # count is a size
+    assert standalone_numbers("Tinte nº 6.6 rubio") == {"6.6"}
+    assert standalone_numbers("Leche 1,5 L") == set()  # a size, not a variant
+    assert standalone_numbers("Chocolate 85% cacao") == {"85"}
+    assert standalone_numbers("Pizza cuatro quesos Dia Al Punto 400 g") == set()
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ("Pañales bebé talla 4 Dodot de 9-14 kg", "Pañales 4-8 kg talla 2 Dodot 58 unidades", True),
+        ("Pañales bebé talla 6 Dodot de 13-18 kg", "Pañales 14-20 kg talla 6 Dodot 48 unidades", False),
+        ("Chocolate negro 72% cacao", "Chocolate negro 74% cacao", True),
+        ("Chocolate negro 85% cacao", "Chocolate negro 85% cacao sin azúcar", False),
+        ("Leche semidesnatada Hacendado", "Leche semidesnatada Dia pack 6 x 1 L", False),  # one side blank
+        ("Yogur natural 4 x 125 g", "Yogur natural 8 x 125 g", False),  # sizes, not variants
+        ("Pizza Formaggi Hacendado 4 quesos", "Pizza cuatro quesos Dia Al Punto 400 g", False),
+    ],
+)
+def test_numbers_conflict(a, b, expected):
+    assert numbers_conflict(a, b) is expected
+
+
+def test_national_brand_matcher_refuses_a_number_conflict():
+    """Dodot size 4 was paired with Dodot size 2: same brand, same pack count."""
+    m = priced("m1", "Pañales bebé talla 4 Dodot de 9-14 kg", "Dodot", 18.95, 0.327, "ud")
+    d = priced("d1", "Pañales 4-8 kg talla 2 Dodot 58 unidades", "Dodot", 20.95, 0.361, "ud")
+    assert match_records([m], [d], min_score=0.4) == []
+
+
+def test_own_brand_matcher_refuses_a_number_conflict():
+    m = priced("m1", "Chocolate negro 72% cacao Hacendado", "Hacendado", 1.5, 15.0, "kg")
+    d = priced("d1", "Chocolate negro 74% cacao Dia", "Dia", 1.5, 15.0, "kg")
+    assert own_brand_candidates([m], [d]) == []

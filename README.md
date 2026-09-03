@@ -23,7 +23,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | 2 | Parser de tickets local-first + dashboard personal |
 | 🔨 3 | Dia ✅ · Alcampo/Carrefour · zonificación real de Dia |
 | 🔨 4 | Marca nacional ✅ · overrides comunitarios ✅ · marca blanca (embeddings + juez) |
-| 5 | Optimizador de cesta explicable |
+| ✅ 5 | Optimizador de cesta explicable |
 | 6 | MCP server + carrito pre-rellenado |
 | 🔨 7 | Tu inflación real vs IPC del INE ✅ · alertas de precio |
 
@@ -138,6 +138,41 @@ ordena primero las sospechosas (diferencia de precio desmedida, sin tamaño o co
 flojo) y cada fila tiene un botón que copia al portapapeles la línea lista para pegar en
 `overrides.jsonl`. Ese es el bucle: mirar, detectar, corregir, y la corrección vale para
 siempre.
+
+### Dónde comprar tu lista
+
+`basket` es el producto: le das tu lista y te dice dónde comprar cada cosa y por qué,
+contando envío y pedido mínimo, que es lo que convierte "más barato" en "compensa".
+
+```bash
+uv run opencesta basket lista.txt --prices ../data --equivalences ../equivalences.jsonl
+```
+
+```
+Tu lista: 10 productos encontrados (9 comparables entre cadenas, 1 solo en una)
+
+  todo en dia                        47,29 € productos + 4,99 € envío = 52,28 €
+  todo en mercadona                        —             ✗ «pañales talla 4» no está en mercadona
+  repartido entre dia y mercadona    49,49 € productos + 13,19 € envío = 62,68 €   ✗ mercadona no llega al pedido mínimo de 60,00 €
+
+Mejor: todo en dia por 52,28 €
+
+Por producto:
+  pizza cuatro quesos      dia  2,49 €   mercadona  3,90 €  dia ahorra 1,41 €
+  salsa de soja            dia  1,20 €   mercadona  2,50 €  dia ahorra 1,30 €
+  mayonesa hellmann's      dia  2,95 €   mercadona  2,65 €  mercadona ahorra 0,30 €
+  …
+```
+
+Con dos cadenas el espacio de decisión son tres planes —todo en A, todo en B, o repartido—
+y cada uno se expone en euros con su motivo: un plan que no llega al pedido mínimo lo dice
+en vez de fingir que se puede pedir. Solo se comparan productos que el emparejador ha
+juzgado equivalentes; lo que existe en una sola cadena se compra allí o no se compra, nunca
+se sustituye en silencio por algo que nadie ha revisado.
+
+Las condiciones de envío por defecto (Mercadona 8,20 € y mínimo de 60 €; Dia 4,99 €, gratis
+desde 100 €) cambian por código postal y sin avisar: pásalas con `--delivery-a`, `--min-a`,
+`--free-b`… Un mínimo mal puesto convierte un buen plan en uno fantasma.
 
 Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
 
