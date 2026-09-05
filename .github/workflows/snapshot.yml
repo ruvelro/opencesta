@@ -86,10 +86,24 @@ jobs:
     if: ${{ !cancelled() && needs.contract.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - uses: actions/download-artifact@v4
         with:
           path: data/
           merge-multiple: true
+      # The MCP server and anyone else consuming the release need the cross-chain
+      # pairs and the catalog too, not just the prices. Verdicts and overrides
+      # live in the repo, so this needs no API key: unjudged pairs are dropped.
+      - name: Build equivalences for today's prices
+        working-directory: core
+        run: |
+          uv sync
+          mkdir -p ../data/catalog && cp ../catalog/mercadona.parquet ../data/catalog/
+          uv run opencesta match --prices ../data --overrides ../overrides.jsonl \
+            --own-brands --judge --verdicts ../verdicts.jsonl --out ../equivalences.jsonl
+          cp ../catalog/mercadona.parquet ../catalog-mercadona.parquet
+          rm -rf ../data/catalog
       - name: Publish daily release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,13 +118,14 @@ jobs:
           ZONES=$(find data -name '*.parquet' | sed -E 's#.*chain=([^/]+)/zone=([^/]+)/.*#\1/\2#' \
                   | sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g')
           tar -czf prices.tar.gz data/
-          gh release create "$TAG" prices.tar.gz \
+          ASSETS="prices.tar.gz equivalences.jsonl catalog-mercadona.parquet"
+          gh release create "$TAG" $ASSETS \
             --repo "$GITHUB_REPOSITORY" \
             --title "Precios $(date -u +%F)" \
-            --notes "Snapshot diario del dataset (Parquet particionado por chain/zone/date).
+            --notes "Snapshot diario del dataset (Parquet particionado por chain/zone/date), equivalencias entre cadenas y catálogo.
 
           Zonas incluidas: ${ZONES}." \
-            || gh release upload "$TAG" prices.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+            || gh release upload "$TAG" $ASSETS --repo "$GITHUB_REPOSITORY" --clobber
 
   verify:
     # The dataset's one promise is that it can be queried in a single pass. That

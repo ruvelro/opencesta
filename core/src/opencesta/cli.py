@@ -131,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     bas.add_argument("--split-penalty", type=float, default=0.0,
                      help="euros you'd pay to avoid two deliveries (0 = only real costs)")
 
+    sub.add_parser("serve", help="run the MCP server over stdio (for Claude Desktop/Code)")
+
     inf = sub.add_parser("inflation", help="your measured basket change vs the INE food IPC")
     inf.add_argument("--chain", default="mercadona", choices=sorted(ADAPTERS))
     inf.add_argument("--zone", required=True)
@@ -167,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_review(args)
     elif args.command == "basket":
         return _run_basket(args)
+    elif args.command == "serve":
+        from opencesta.mcp_server import main as serve
+
+        serve()
     elif args.command == "retype":
         fixed = retype_tree(args.root)
         for path, columns in fixed.items():

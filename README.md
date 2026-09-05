@@ -24,7 +24,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | 🔨 3 | Dia ✅ · Alcampo/Carrefour · zonificación real de Dia |
 | 🔨 4 | Marca nacional ✅ · overrides comunitarios ✅ · marca blanca (embeddings + juez) |
 | ✅ 5 | Optimizador de cesta explicable |
-| 6 | MCP server + carrito pre-rellenado |
+| 🔨 6 | MCP server ✅ · carrito pre-rellenado |
 | 🔨 7 | Tu inflación real vs IPC del INE ✅ · alertas de precio |
 
 ## Estructura
@@ -177,6 +177,25 @@ se sustituye en silencio por algo que nadie ha revisado.
 Las condiciones de envío por defecto (Mercadona 8,20 € y mínimo de 60 €; Dia 4,99 €, gratis
 desde 100 €) cambian por código postal y sin avisar: pásalas con `--delivery-a`, `--min-a`,
 `--free-b`… Un mínimo mal puesto convierte un buen plan en uno fantasma.
+
+### Preguntar desde Claude
+
+Todo lo anterior está expuesto como servidor MCP, así que puedes preguntarle a Claude
+"¿dónde compro más barata esta lista?" sin clonar nada: el servidor descarga y cachea
+las últimas releases publicadas la primera vez que se usa.
+
+```bash
+claude mcp add opencesta -- uvx --from git+https://github.com/ruvelro/opencesta#subdirectory=core opencesta-mcp
+```
+
+O, si tienes el repo clonado, `uv run opencesta serve` desde `core/`. Para Claude Desktop,
+el mismo comando en su configuración de servidores MCP.
+
+Herramientas: `basket` (dónde comprar una lista), `compare` (un producto en cada cadena),
+`price_changes` (qué ha subido y bajado), `inflation` (tu cesta frente al IPC del INE) y
+`zone_for_postal_code`. Cada respuesta lleva el porqué en euros, y el recurso
+`opencesta://status` dice qué datos hay cargados. Con `OPENCESTA_DATA` apuntando a un
+directorio local no se toca la red, y `OPENCESTA_ZONE` elige la zona de Mercadona.
 
 Y `inflation` contrasta esa variación con el IPC de alimentación del INE:
 
