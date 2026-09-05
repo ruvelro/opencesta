@@ -31,7 +31,8 @@ def test_null_columns_get_their_declared_type(tmp_path):
 
     fixed = retype_file(path)
 
-    assert sorted(fixed) == ["brand", "ean", "origin", "thumbnail"]
+    # Four Null-typed columns cast, plus the column the schema gained later.
+    assert sorted(fixed) == ["brand", "captured_at_ts", "ean", "origin", "thumbnail"]
     schema = pl.read_parquet(path).schema
     assert schema["brand"] == pl.String
     assert pl.Null not in set(schema.values())
@@ -53,7 +54,8 @@ def test_values_and_row_count_are_preserved(tmp_path):
 
 def test_a_healthy_file_is_left_alone(tmp_path):
     path = tmp_path / "prices.parquet"
-    pl.DataFrame({k: BROKEN[k] for k in BROKEN}, schema=SCHEMA).write_parquet(path)
+    healthy = {**BROKEN, "captured_at_ts": ["2026-09-05T09:07:00+00:00"]}
+    pl.DataFrame(healthy, schema=SCHEMA).write_parquet(path)
     stamp = path.stat().st_mtime_ns
 
     assert retype_file(path) == []
@@ -83,3 +85,35 @@ def test_repaired_files_read_in_a_single_pass(tmp_path):
     combined = pl.read_parquet(tmp_path / "**" / "*.parquet")
     assert combined.height == 2
     assert sorted(combined["captured_at"].to_list()) == ["2026-08-29", "2026-08-30"]
+
+
+def test_a_column_the_schema_gained_later_is_added_as_typed_null(tmp_path):
+    """Files written before captured_at_ts existed must still read with new ones."""
+    old = write_broken(tmp_path / "old" / "prices.parquet")
+    frame = pl.read_parquet(old).drop("brand", "ean", "origin", "thumbnail")
+    frame.write_parquet(old)  # now healthy types but missing four columns + the new one
+    assert "captured_at_ts" not in pl.read_parquet(old).columns
+
+    fixed = retype_file(old)
+
+    assert "captured_at_ts" in fixed
+    repaired = pl.read_parquet(old)
+    assert repaired.columns == PriceRecord.columns()
+    assert repaired.schema["captured_at_ts"] == pl.String
+    assert repaired["captured_at_ts"].to_list() == [None]
+
+
+def test_old_and_new_files_read_together_after_retype(tmp_path):
+    write_broken(tmp_path / "date=2026-08-30" / "prices.parquet")
+    new = tmp_path / "date=2026-09-06" / "prices.parquet"
+    new.parent.mkdir(parents=True)
+    pl.DataFrame({**BROKEN, "captured_at": ["2026-09-06"],
+                  "captured_at_ts": ["2026-09-06T09:07:00+00:00"]},
+                 schema=SCHEMA).write_parquet(new)
+
+    with pytest.raises(pl.exceptions.SchemaError):
+        pl.read_parquet(tmp_path / "**" / "*.parquet")
+    retype_tree(tmp_path)
+    combined = pl.read_parquet(tmp_path / "**" / "*.parquet")
+    assert combined.height == 2
+    assert combined["captured_at_ts"].null_count() == 1

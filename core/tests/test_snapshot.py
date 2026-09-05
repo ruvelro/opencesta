@@ -76,3 +76,13 @@ def test_a_snapshot_with_no_products_is_an_error(tmp_path, monkeypatch):
 def test_column_order_is_stable(tmp_path, monkeypatch):
     path = write(tmp_path, "mercadona", "vlc1", [record("mercadona", "vlc1")], monkeypatch)
     assert pl.read_parquet(path).columns == [f.name for f in dataclasses.fields(PriceRecord)]
+
+
+def test_snapshot_stamps_the_capture_instant(tmp_path, monkeypatch):
+    """The scheduler drifts by hours; the day alone hides when prices were read."""
+    path = write(tmp_path, "mercadona", "vlc1", [record("mercadona", "vlc1")], monkeypatch)
+    frame = pl.read_parquet(path)
+    assert frame.schema["captured_at_ts"] == pl.String
+    stamp = frame["captured_at_ts"][0]
+    assert stamp.startswith("20") and "T" in stamp and stamp.endswith("+00:00")
+    assert frame["captured_at"][0] == "2026-08-31"  # the series key is untouched

@@ -82,6 +82,9 @@ def test_score_pair():
         ((6.0, "L"), (1.0, "L"), False),  # different pack
         ((1.0, "L"), (1.0, "kg"), False),  # different unit
         (None, (1.0, "L"), False),
+        ((58.0, "ud"), (62.0, "ud"), True),  # counted goods: same product, near count
+        ((18.0, "ud"), (1.0, "ud"), False),  # an 18-pack is not a single unit
+        ((1.0, "L"), (1.2, "L"), False),  # the wide band is for counts only
     ],
 )
 def test_sizes_agree(a, b, expected):
@@ -474,3 +477,18 @@ def test_own_brand_matcher_refuses_a_number_conflict():
     m = priced("m1", "Chocolate negro 72% cacao Hacendado", "Hacendado", 1.5, 15.0, "kg")
     d = priced("d1", "Chocolate negro 74% cacao Dia", "Dia", 1.5, 15.0, "kg")
     assert own_brand_candidates([m], [d]) == []
+
+
+def test_counted_packs_of_nearby_size_are_candidates():
+    """58 and 62 nappies of the same size are one product; the price is per unit."""
+    m = priced("m1", "Pañales bebé talla 4 Dodot de 9-14 kg", "Dodot", 18.95, 0.327, "ud")
+    d = priced("d1", "Pañales 10-15 kg talla 4 Dodot 62 unidades", "Dodot", 20.95, 0.338, "ud")
+    assert own_brand_candidates([m], [d]) != []
+    assert match_records([m], [d], min_score=0.4) != []
+
+
+def test_a_multipack_still_never_meets_a_single_unit():
+    pack = priced("m1", "Vela perfumada Neroli Bosque Verde", "Bosque Verde",
+                  1.85, 0.103, "ud")
+    single = priced("d1", "Vela perfumada mimosa Dia Imaqe 1 unidad", "Dia Imaqe", 1.89, 1.89, "ud")
+    assert own_brand_candidates([pack], [single]) == []

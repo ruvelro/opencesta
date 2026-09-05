@@ -348,6 +348,22 @@ def _meet_minimums(items: list[Item], plan: Plan, terms: dict[str, Terms]) -> No
             plan.subtotals[chain] = 0.0
 
 
+def _per_unit_note(item: Item) -> str:
+    """For counted packs of different sizes, the fair figure is the price per unit.
+
+    A 58-nappy pack and a 62-nappy pack are the same product; the pack price
+    says which costs more at the till, the per-unit price says which is dearer.
+    """
+    offers = list(item.offers.values())
+    if any(o.reference_format != "ud" or not o.reference_price for o in offers):
+        return ""
+    counts = {round(o.unit_price / o.reference_price) for o in offers}
+    if len(counts) < 2:
+        return ""
+    per_unit = ", ".join(f"{o.chain} {eur(o.reference_price)}/ud" for o in offers)
+    return f" ({per_unit})"
+
+
 def eur(amount: float) -> str:
     return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " €"
 
@@ -411,6 +427,7 @@ def explain(items: list[Item], plans: list[Plan], terms: dict[str, Terms],
             cheap, dear = min(costs, key=costs.get), max(costs, key=costs.get)
             gap = round(costs[dear] - costs[cheap], 2)
             marker = "  igual" if gap < 0.01 else f"  {cheap} ahorra {eur(gap)}"
+            marker += _per_unit_note(item)
         qty = f"{item.quantity}x " if item.quantity > 1 else ""
         chosen = item.offers[best.assignment[index]].name
         lines.append(f"  {qty}{item.query[:28]:<30} {'   '.join(cells)}{marker}")

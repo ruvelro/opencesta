@@ -34,6 +34,9 @@ class PriceRecord:
     ean: str | None = None
     origin: str | None = None
     thumbnail: str | None = field(default=None, repr=False)
+    # When the capture actually ran, UTC. `captured_at` is the day the series is
+    # keyed on; this is the instant, because the scheduler drifts by hours.
+    captured_at_ts: str | None = None
 
     @classmethod
     def columns(cls) -> list[str]:
@@ -66,4 +69,5 @@ SCHEMA: dict[str, pl.DataType] = {
     "ean": pl.String,
     "origin": pl.String,
     "thumbnail": pl.String,
+    "captured_at_ts": pl.String,
 }

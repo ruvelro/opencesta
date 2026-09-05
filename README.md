@@ -44,7 +44,7 @@ uv sync
 uv run opencesta snapshot --zone vlc1 --out ../data
 ```
 
-Esto genera `data/chain=mercadona/zone=vlc1/date=YYYY-MM-DD/prices.parquet` con todo el catálogo de esa zona. Consúltalo con DuckDB:
+Esto genera `data/chain=mercadona/zone=vlc1/date=YYYY-MM-DD/prices.parquet` con todo el catálogo de esa zona. Cada fila lleva `captured_at` (el día, que es la clave de la serie) y `captured_at_ts` (el instante UTC en que corrió la captura: el planificador se retrasa horas y para una serie de precios eso importa). Consúltalo con DuckDB:
 
 ```sql
 SELECT display_name, unit_price, reference_price, reference_format
@@ -163,6 +163,10 @@ Por producto:
   mayonesa hellmann's      dia  2,95 €   mercadona  2,65 €  mercadona ahorra 0,30 €
   …
 ```
+
+Los productos que se venden contados —pañales, cápsulas, bolsas— se comparan por precio
+**por unidad**: un paquete de 58 y otro de 62 son el mismo producto, y la línea lo muestra
+(`mercadona 0,33 €/ud, dia 0,31 €/ud`) aunque el precio de paquete sea igual.
 
 Con dos cadenas el espacio de decisión son tres planes —todo en A, todo en B, o repartido—
 y cada uno se expone en euros con su motivo: un plan que no llega al pedido mínimo lo dice

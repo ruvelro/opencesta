@@ -287,3 +287,22 @@ def test_delivery_is_waived_above_the_free_threshold():
     assert plans[("dia",)].delivery == 0.0
     assert plans[("mercadona",)].delivery == 8.20
     assert plans[("dia",)].total < plans[("mercadona",)].total
+
+
+def test_counted_packs_of_different_size_show_the_price_per_unit():
+    items = [item("pañales talla 4", [
+        offer("mercadona", "1", "Pañales talla 4 Dodot", 18.95, ref=0.327, fmt="ud"),
+        offer("dia", "2", "Pañales talla 4 Dodot 62 unidades", 20.95, ref=0.338, fmt="ud"),
+    ])]
+    terms = {c: Terms(c, delivery=0.0, minimum_order=0.0) for c in ("mercadona", "dia")}
+    text = explain(items, optimize(items, terms), terms, not_found=[])
+    assert "mercadona 0,33 €/ud" in text and "dia 0,34 €/ud" in text
+
+
+def test_same_size_packs_get_no_per_unit_note():
+    items = [item("x", [
+        offer("mercadona", "1", "X 20 unidades", 2.0, ref=0.10, fmt="ud"),
+        offer("dia", "2", "X 20 unidades", 2.2, ref=0.11, fmt="ud"),
+    ])]
+    terms = {c: Terms(c, delivery=0.0, minimum_order=0.0) for c in ("mercadona", "dia")}
+    assert "€/ud" not in explain(items, optimize(items, terms), terms, not_found=[])

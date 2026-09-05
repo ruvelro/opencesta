@@ -215,15 +215,21 @@ def own_brand_candidates(
     conflicts — the caller decides which ones to accept, since some need judging.
     """
     forbidden = forbidden or set()
-    buckets: dict[tuple[str, float], list[tuple[dict, frozenset[str]]]] = {}
+    # Weighed and measured goods are bucketed by exact size; counted goods share
+    # one bucket per format and are filtered by sizes_agree, whose wider band
+    # for "ud" is what lets a 58-pack meet a 62-pack.
+    def bucket_key(fmt: str, size: tuple[float, str]) -> tuple[str, float | None]:
+        return (fmt, None if fmt == "ud" else round(size[0], 3))
+
+    buckets: dict[tuple[str, float | None], list[tuple[dict, frozenset[str], Any]]] = {}
     for record in records_b:
         size = record_size(record)
         fmt = record.get("reference_format")
         if not size or not fmt:
             continue
-        key = (fmt, round(size[0], 3))
-        buckets.setdefault(key, []).append((record, tokenize(record["display_name"],
-                                                             record.get("brand"))))
+        buckets.setdefault(bucket_key(fmt, size), []).append(
+            (record, tokenize(record["display_name"], record.get("brand")), size)
+        )
 
     candidates = []
     for record in records_a:
@@ -232,7 +238,9 @@ def own_brand_candidates(
         if not size or not fmt:
             continue
         tokens_a = tokenize(record["display_name"], record.get("brand"))
-        for other, tokens_b in buckets.get((fmt, round(size[0], 3)), []):
+        for other, tokens_b, size_b in buckets.get(bucket_key(fmt, size), []):
+            if not sizes_agree(size, size_b):
+                continue
             if (str(record["sku"]), str(other["sku"])) in forbidden:
                 continue
             if numbers_conflict(record["display_name"], other["display_name"]):
@@ -380,14 +388,23 @@ def size_gap(a: tuple[float, str] | None, b: tuple[float, str] | None) -> float:
     return 0.0 if larger == 0 else abs(a[0] - b[0]) / larger
 
 
+# Counted goods get a wider tolerance than weighed or measured ones. A 58-nappy
+# pack and a 62-nappy pack are the same product to anyone buying nappies, and
+# the reference price is already per unit, so the comparison stays fair. The
+# band is still tight enough that an 18-candle pack never meets a single candle.
+_TOLERANCE = {"ud": 0.25}
+_DEFAULT_TOLERANCE = 0.02
+
+
 def sizes_agree(a: tuple[float, str] | None, b: tuple[float, str] | None) -> bool:
-    """Same unit and within 2% — enough for rounding, not enough to cross pack sizes."""
+    """Same unit and within tolerance — rounding slack, never a different pack."""
     if a is None or b is None:
         return False
     if a[1] != b[1]:
         return False
     larger = max(a[0], b[0])
-    return larger > 0 and abs(a[0] - b[0]) / larger <= 0.02
+    tolerance = _TOLERANCE.get(a[1], _DEFAULT_TOLERANCE)
+    return larger > 0 and abs(a[0] - b[0]) / larger <= tolerance
 
 
 def match_records(

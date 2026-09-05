@@ -29,13 +29,19 @@ jobs:
           gh release download --pattern prices.tar.gz --dir . --clobber || exit 0
           tar -xzf prices.tar.gz
 
+      # One pass per zone, sharing the catalog. The detail endpoint answers for
+      # the warehouse it is asked with, so a product sold only in Madrid has to
+      # be asked for from mad1 — enriching vlc1 alone left every zone-exclusive
+      # SKU without EAN, and own-brand detection depends on it.
       - name: Enrich
         working-directory: core
         run: |
           uv sync
-          uv run opencesta enrich --zone vlc1 --prices ../data \
-            --catalog ../catalog/mercadona.parquet \
-            --limit ${{ inputs.limit || 500 }}
+          for ZONE in vlc1 mad1 bcn1 alc1; do
+            uv run opencesta enrich --zone "$ZONE" --prices ../data \
+              --catalog ../catalog/mercadona.parquet \
+              --limit ${{ inputs.limit || 500 }}
+          done
 
       - name: Commit catalog
         run: |

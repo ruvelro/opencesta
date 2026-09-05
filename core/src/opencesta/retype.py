@@ -18,10 +18,16 @@ from opencesta.models import SCHEMA, PriceRecord
 
 
 def retype_file(path: Path) -> list[str]:
-    """Cast a file's Null columns onto the declared schema; return what was fixed."""
+    """Bring a file onto the declared schema; return the columns it touched.
+
+    Two repairs: Null-typed columns are cast to their declared type, and columns
+    the schema gained after the file was written are added as typed nulls, so
+    old and new snapshots keep reading as one series.
+    """
     frame = pl.read_parquet(path)
     broken = [name for name, dtype in frame.schema.items() if dtype == pl.Null]
-    if not broken:
+    missing = [name for name in SCHEMA if name not in frame.columns]
+    if not broken and not missing:
         return []
     unknown = [name for name in broken if name not in SCHEMA]
     if unknown:
@@ -30,11 +36,12 @@ def retype_file(path: Path) -> list[str]:
     rows_before = frame.height
     repaired = frame.with_columns(
         [pl.col(name).cast(SCHEMA[name]) for name in broken]
+        + [pl.lit(None).cast(SCHEMA[name]).alias(name) for name in missing]
     ).select(PriceRecord.columns())
     if repaired.height != rows_before:
         raise RuntimeError(f"{path}: la reparación cambió el número de filas")
     repaired.write_parquet(path)
-    return broken
+    return broken + missing
 
 
 def retype_tree(root: Path) -> dict[Path, list[str]]:
