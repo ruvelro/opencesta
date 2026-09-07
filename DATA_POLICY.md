@@ -38,3 +38,28 @@ que omitir la cabecera, que es lo que exige el punto 3. Las cabeceras exactas qu
 están declaradas en `MINIMAL_HEADERS` en
 [`core/src/opencesta/adapters/dia.py`](core/src/opencesta/adapters/dia.py), y el transporte
 tiene un test que garantiza que no añade ninguna por su cuenta.
+
+
+## Tercera cadena: qué contestó cada una (2026-09-07)
+
+Sondeo con nuestro User-Agent identificado, sin cabeceras de navegador ni trucos, para
+elegir la tercera cadena. Se documenta entero porque un "no" también es un dato, y porque
+la siguiente persona que lo intente merece no repetirlo:
+
+| Cadena | robots.txt | Páginas con datos | Veredicto |
+|---|---|---|---|
+| Carrefour | 200 | **403 en todo** (Cloudflare) | Descartada: bloquea al agente identificado |
+| Alcampo | 200, muy permisivo | home 200, **categorías 403** | Descartada: bloquea justo donde están los datos |
+| Consum | 200 | páginas de 8 KB; los datos vienen de `/api/`, que su propio robots.txt **prohíbe** | Descartada: la única fuente está vedada |
+| Eroski | 200 | 200, ~1,2 MB con productos servidos | Viable, pero en **marcado HTML**, no JSON |
+
+Carrefour y Alcampo entran de lleno en el punto 10: bloquean a un cliente que se
+identifica, y pasar de ahí exigiría suplantar a un navegador. Se paró y se documentó.
+
+Consum es un caso distinto y más limpio: sus datos existen y son alcanzables, pero su
+robots.txt excluye `/api/`. Respetarlo es respetarlo también cuando incomoda.
+
+Eroski sí es viable. La decisión que queda abierta no es de permisos sino de arquitectura:
+su catálogo llega como HTML renderizado en servidor, así que sería el primer adaptador que
+lee marcado en vez de JSON — exactamente la fragilidad que este proyecto dice evitar en su
+primera página. Merece decidirse a conciencia, no por inercia.
