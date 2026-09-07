@@ -10,3 +10,5 @@ node_modules/
 .DS_Store
 equivalences.jsonl
 review.html
+# Se reconstruye en CI desde las releases y se despliega como artefacto de Pages.
+docs/data/

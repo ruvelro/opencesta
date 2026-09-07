@@ -127,6 +127,53 @@ jobs:
           Zonas incluidas: ${ZONES}." \
             || gh release upload "$TAG" $ASSETS --repo "$GITHUB_REPOSITORY" --clobber
 
+  pages:
+    # The site is rebuilt from the published releases and deployed as a Pages
+    # artifact, never committed: a 1.4 MB Parquet a day would bloat the repo
+    # within months, and the data already lives in Releases.
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: Build the site's Parquet from the last 9 releases
+        working-directory: core
+        run: |
+          uv sync
+          uv run python - <<'PY'
+          from pathlib import Path
+          import polars as pl
+          from opencesta.data import ensure_data
+
+          root = ensure_data(days=9, cache_dir=Path("../.pages-cache"))
+          files = sorted(p for p in root.rglob("*.parquet") if "chain=" in str(p))
+          frame = pl.concat([pl.read_parquet(f) for f in files], how="vertical")
+          slim = frame.select(
+              "chain", "zone", "captured_at", "sku", "display_name", "category",
+              "subcategory", "unit_price", "reference_price", "reference_format",
+              "brand", "url",
+          )
+          out = Path("../docs/data")
+          out.mkdir(parents=True, exist_ok=True)
+          slim.write_parquet(out / "prices.parquet", compression="zstd", statistics=True)
+          size = (out / "prices.parquet").stat().st_size / 1024 / 1024
+          print(f"{slim.height} filas, {size:.2f} MB, "
+                f"{slim['captured_at'].n_unique()} fechas")
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
   verify:
     # The dataset's one promise is that it can be queried in a single pass. That
     # broke silently once (each snapshot inferred its own dtypes, so a column a
@@ -189,7 +236,7 @@ jobs:
     # A failed snapshot used to be silent: the contract test guards schema drift,
     # but nothing watched the capture itself, so a lost day only showed up if
     # somebody opened the Actions tab.
-    needs: [contract, snapshot, publish, verify]
+    needs: [contract, snapshot, publish, pages, verify]
     if: ${{ always() && contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     permissions:

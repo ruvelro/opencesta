@@ -31,10 +31,20 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 
 ```
 core/   Python (uv + httpx + polars): ingesta, snapshot, dataset
-web/    Next.js estática + DuckDB-WASM (fase posterior)
+docs/   La web: una página estática con DuckDB-WASM, desplegada en GitHub Pages
 ```
 
 El contrato entre ambas mitades es el fichero Parquet: cualquiera puede consumir el dataset sin tocar la web.
+
+## La web
+
+**[ruvelro.github.io/opencesta](https://ruvelro.github.io/opencesta)** — busca un producto,
+compara su precio entre cadenas y mira qué ha subido o bajado.
+
+No hay servidor ni base de datos: la página carga un único Parquet y lo consulta con
+DuckDB-WASM **dentro de tu navegador**, pidiendo por rangos solo los trozos que cada
+consulta necesita. Tus búsquedas no salen de tu equipo. El fichero se reconstruye a diario
+desde las releases y se despliega como artefacto de Pages, así que no engorda el repo.
 
 ## Uso rápido
 

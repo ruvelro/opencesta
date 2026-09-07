@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCesta · precios de supermercado</title>
+<meta name="description" content="Precios de Mercadona y Dia con histórico diario. Consulta el dataset abierto sin instalar nada: la base de datos corre en tu navegador.">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg:#fbfbf9; --fg:#1a1a17; --muted:#6b6b62; --line:#e2e2db;
+  --card:#fff; --accent:#1f6f4a; --bad:#97302b; --chip:#f2f2ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#16161a; --fg:#ecece8; --muted:#9a9a92; --line:#2c2c32;
+          --card:#1e1e23; --accent:#6ec49a; --bad:#e08a84; --chip:#26262c; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; }
+header { padding:26px 20px 14px; border-bottom:1px solid var(--line); }
+.wrap { max-width:1000px; margin:0 auto; }
+h1 { margin:0 0 4px; font-size:20px; letter-spacing:-.01em; }
+.sub { color:var(--muted); font-size:13px; }
+.sub a { color:inherit; }
+.stats { display:flex; flex-wrap:wrap; gap:22px; margin-top:14px; }
+.stat b { display:block; font-size:19px; font-variant-numeric:tabular-nums; }
+.stat span { color:var(--muted); font-size:12px; }
+.controls { position:sticky; top:0; z-index:2; background:var(--bg);
+            border-bottom:1px solid var(--line); padding:12px 20px; }
+.controls .wrap { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+input[type=search], select { padding:8px 10px; border-radius:8px; border:1px solid var(--line);
+       background:var(--card); color:var(--fg); font-size:14px; }
+input[type=search] { flex:1; min-width:200px; }
+button { padding:7px 12px; border-radius:8px; border:1px solid var(--line);
+         background:var(--card); color:var(--fg); font-size:13px; cursor:pointer; }
+button[aria-pressed=true] { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+main { padding:16px 20px 70px; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.05em;
+     color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line); }
+td { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+tbody tr:hover { background:var(--chip); }
+.name { display:block; }
+.meta { color:var(--muted); font-size:12px; }
+.chip { display:inline-block; font-size:11px; padding:1px 7px; border-radius:99px;
+        background:var(--chip); color:var(--muted); }
+.up { color:var(--bad); font-weight:600; }
+.down { color:var(--accent); font-weight:600; }
+.state { color:var(--muted); padding:36px 0; text-align:center; }
+.err { color:var(--bad); }
+.scroll { overflow-x:auto; }
+footer { border-top:1px solid var(--line); padding:18px 20px 40px; color:var(--muted); font-size:12px; }
+code { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--chip);
+       padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>OpenCesta</h1>
+  <div class="sub">Precios de Mercadona y Dia con histórico diario · dataset abierto en
+    <a href="https://github.com/ruvelro/opencesta">github.com/ruvelro/opencesta</a></div>
+  <div class="stats" id="stats"></div>
+</div></header>
+
+<div class="controls"><div class="wrap">
+  <input type="search" id="q" placeholder="Buscar un producto: leche, aceite de oliva, pañales…" autocomplete="off">
+  <select id="chain">
+    <option value="">Ambas cadenas</option>
+    <option value="mercadona">Mercadona</option>
+    <option value="dia">Dia</option>
+  </select>
+  <select id="zone"></select>
+  <button id="tab-search" aria-pressed="true">Buscar</button>
+  <button id="tab-moves" aria-pressed="false">Qué ha cambiado</button>
+</div></div>
+
+<main><div class="wrap">
+  <div id="state" class="state">Cargando la base de datos en tu navegador…</div>
+  <div class="scroll"><table id="table" hidden>
+    <thead id="thead"></thead>
+    <tbody id="tbody"></tbody>
+  </table></div>
+</div></main>
+
+<footer><div class="wrap">
+  Todo se ejecuta en tu navegador con DuckDB-WASM sobre un único fichero Parquet:
+  no hay servidor, no hay base de datos, y tus búsquedas no salen de tu equipo.
+  Los precios son los publicados por cada cadena para la zona indicada.
+  Datos bajo <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL</a>.
+</div></footer>
+
+<script type="module">
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
+
+const $ = (id) => document.getElementById(id);
+const state = $("state");
+const table = $("table");
+const eur = (n) => n == null ? "—"
+  : n.toLocaleString("es-ES", {minimumFractionDigits:2, maximumFractionDigits:2}) + " €";
+
+let conn = null;
+let tab = "search";
+
+function fail(err) {
+  state.hidden = false;
+  state.className = "state err";
+  state.textContent = "No se pudo cargar el dataset: " + (err?.message ?? err);
+  table.hidden = true;
+  console.error(err);
+}
+
+async function boot() {
+  try {
+    const bundles = duckdb.getJsDelivrBundles();
+    const bundle = await duckdb.selectBundle(bundles);
+    // The worker must come from a same-origin URL, so wrap the CDN script.
+    const workerUrl = URL.createObjectURL(
+      new Blob([`importScripts("${bundle.mainWorker}");`], {type: "text/javascript"}));
+    const worker = new Worker(workerUrl);
+    const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+    URL.revokeObjectURL(workerUrl);
+
+    // Same origin as the page, so the browser can range-request it: DuckDB reads
+    // only the row groups a query touches instead of the whole file.
+    const url = new URL("data/prices.parquet", location.href).href;
+    await db.registerFileURL("prices.parquet", url, duckdb.DuckDBDataProtocol.HTTP, false);
+    conn = await db.connect();
+    await conn.query(`CREATE VIEW prices AS SELECT * FROM read_parquet('prices.parquet')`);
+    await header();
+    wire();
+    await render();
+  } catch (err) { fail(err); }
+}
+
+const rows = async (sql, params = []) => {
+  const stmt = await conn.prepare(sql);
+  const res = await stmt.query(...params);
+  await stmt.close();
+  return res.toArray().map((r) => r.toJSON());
+};
+
+async function header() {
+  const [s] = await rows(`
+    SELECT count(*) AS filas, count(DISTINCT sku) AS productos,
+           count(DISTINCT captured_at) AS dias, max(captured_at) AS ultima
+    FROM prices`);
+  $("stats").innerHTML = [
+    [Number(s.productos).toLocaleString("es-ES"), "productos"],
+    [Number(s.filas).toLocaleString("es-ES"), "observaciones de precio"],
+    [s.dias, "días de histórico"],
+    [s.ultima, "última captura"],
+  ].map(([v, k]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+
+  const zones = await rows(`SELECT DISTINCT chain, zone FROM prices ORDER BY chain, zone`);
+  $("zone").innerHTML = '<option value="">Todas las zonas</option>' +
+    zones.map((z) => `<option value="${z.zone}">${z.chain} · ${z.zone}</option>`).join("");
+}
+
+function filters() {
+  const where = [], params = [];
+  const q = $("q").value.trim();
+  if (q) {
+    // Every word must appear, so "leche semi" narrows instead of widening.
+    for (const w of q.split(/\s+/)) { where.push(`display_name ILIKE ?`); params.push(`%${w}%`); }
+  }
+  const chain = $("chain").value, zone = $("zone").value;
+  if (chain) { where.push(`chain = ?`); params.push(chain); }
+  if (zone) { where.push(`zone = ?`); params.push(zone); }
+  return {clause: where.length ? "WHERE " + where.join(" AND ") : "", params, q};
+}
+
+async function render() {
+  state.hidden = false;
+  state.className = "state";
+  state.textContent = "Consultando…";
+  table.hidden = true;
+  try {
+    const {clause, params, q} = filters();
+    if (tab === "search") await renderSearch(clause, params, q);
+    else await renderMoves(clause, params);
+  } catch (err) { fail(err); }
+}
+
+async function renderSearch(clause, params, q) {
+  if (!q) {
+    state.textContent = "Escribe un producto para buscarlo entre 204.000 observaciones de precio.";
+    return;
+  }
+  const data = await rows(`
+    WITH ultimo AS (SELECT max(captured_at) AS d FROM prices)
+    SELECT chain, zone, display_name, brand, unit_price, reference_price,
+           reference_format, url
+    FROM prices, ultimo
+    ${clause ? clause + " AND" : "WHERE"} captured_at = ultimo.d
+    ORDER BY reference_price NULLS LAST
+    LIMIT 200`, params);
+  if (!data.length) { state.textContent = "Ningún producto coincide."; return; }
+  $("thead").innerHTML = `<tr><th>Producto</th><th>Cadena</th>
+    <th class="num">Precio</th><th class="num">Por unidad</th></tr>`;
+  $("tbody").innerHTML = data.map((r) => `<tr>
+      <td><a class="name" href="${r.url}" target="_blank" rel="noopener">${esc(r.display_name)}</a>
+          <span class="meta">${esc(r.brand ?? "")}</span></td>
+      <td><span class="chip">${r.chain} · ${r.zone}</span></td>
+      <td class="num">${eur(r.unit_price)}</td>
+      <td class="num">${r.reference_price == null ? "—"
+          : eur(r.reference_price) + "/" + (r.reference_format ?? "")}</td>
+    </tr>`).join("");
+  show(data.length);
+}
+
+async function renderMoves(clause, params) {
+  const data = await rows(`
+    WITH lim AS (SELECT min(captured_at) AS a, max(captured_at) AS b FROM prices),
+    hoy AS (SELECT chain, zone, sku, display_name, brand, unit_price, url
+            FROM prices, lim ${clause ? clause + " AND" : "WHERE"} captured_at = lim.b),
+    antes AS (SELECT chain, zone, sku, unit_price FROM prices, lim
+              ${clause ? clause + " AND" : "WHERE"} captured_at = lim.a)
+    SELECT h.chain, h.zone, h.display_name, h.brand, h.url,
+           a.unit_price AS antes, h.unit_price AS ahora,
+           round((h.unit_price - a.unit_price) / a.unit_price * 100, 1) AS pct
+    FROM hoy h JOIN antes a USING (chain, zone, sku)
+    WHERE a.unit_price <> h.unit_price AND a.unit_price > 0
+    ORDER BY abs(pct) DESC
+    LIMIT 200`, [...params, ...params]);
+  if (!data.length) { state.textContent = "Sin cambios de precio con este filtro."; return; }
+  const [{a, b}] = await rows(`SELECT min(captured_at) AS a, max(captured_at) AS b FROM prices`);
+  $("thead").innerHTML = `<tr><th>Producto</th><th>Cadena</th>
+    <th class="num">${a}</th><th class="num">${b}</th><th class="num">Cambio</th></tr>`;
+  $("tbody").innerHTML = data.map((r) => `<tr>
+      <td><a class="name" href="${r.url}" target="_blank" rel="noopener">${esc(r.display_name)}</a>
+          <span class="meta">${esc(r.brand ?? "")}</span></td>
+      <td><span class="chip">${r.chain} · ${r.zone}</span></td>
+      <td class="num">${eur(r.antes)}</td>
+      <td class="num">${eur(r.ahora)}</td>
+      <td class="num ${r.pct > 0 ? "up" : "down"}">${r.pct > 0 ? "+" : ""}${r.pct}%</td>
+    </tr>`).join("");
+  show(data.length);
+}
+
+function show(n) {
+  state.hidden = true;
+  table.hidden = false;
+  if (n === 200) {
+    state.hidden = false;
+    state.textContent = "Mostrando las 200 primeras filas.";
+  }
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let timer;
+function wire() {
+  $("q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(render, 220); });
+  $("chain").addEventListener("change", render);
+  $("zone").addEventListener("change", render);
+  for (const [id, name] of [["tab-search","search"], ["tab-moves","moves"]]) {
+    $(id).addEventListener("click", () => {
+      tab = name;
+      $("tab-search").setAttribute("aria-pressed", String(name === "search"));
+      $("tab-moves").setAttribute("aria-pressed", String(name === "moves"));
+      render();
+    });
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
