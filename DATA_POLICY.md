@@ -63,3 +63,33 @@ Eroski sí es viable. La decisión que queda abierta no es de permisos sino de a
 su catálogo llega como HTML renderizado en servidor, así que sería el primer adaptador que
 lee marcado en vez de JSON — exactamente la fragilidad que este proyecto dice evitar en su
 primera página. Merece decidirse a conciencia, no por inercia.
+
+## Sondeo ampliado a 25 cadenas (2026-09-17)
+
+Dos cadenas no bastan para que un comparador sirva, así que se sondearon veinticinco con
+el User-Agent identificado, clasificándolas por plataforma: si varias comparten stack, un
+adaptador cubre a todas.
+
+**Publican precios y se dejan leer**
+
+| Cadena | Cómo | Estado |
+|---|---|---|
+| Mercadona | API JSON interna | en producción |
+| Dia | JSON embebido (Vike) | en producción |
+| **Ahorramas** | **`application/ld+json`, 4.599 productos** | **en producción** |
+| Eroski | HTML renderizado en servidor | viable, decisión de arquitectura pendiente |
+
+**No publican precios de alimentación en la web abierta.** No es una barrera técnica: el
+dato no existe. Lidl España vende solo bazar online (de 6.586 productos del sitemap, los
+visibles son colchones y carros de jardín) y Aldi lista su surtido sin un solo campo de
+precio en su payload de 68 KB. Ninguna de las dos sirve para comparar la compra.
+
+**Bloquean al agente identificado:** Carrefour, El Corte Inglés y Alimerka responden 403.
+Alcampo y Bonpreu comparten plataforma (`__URQL_DATA__`) y sirven la portada, pero dan 403
+en las páginas con datos. Consum expone los suyos solo por `/api/`, que su robots excluye.
+
+**Sin tienda online con precios nacionales:** Spar, Covirán, Caprabo, Suma, Froiz, Gadis,
+Lupa y HiperDino resultaron ser webs corporativas o de folletos, sin catálogo con precios.
+
+La conclusión operativa es que el universo abordable hoy en España son unas cuatro o cinco
+cadenas, no quince. Conviene saberlo antes de prometer lo contrario.

@@ -65,6 +65,9 @@ jobs:
           # Dia serves one anonymous catalog; see DATA_POLICY.md on its zoning.
           - chain: dia
             zone: es-default
+          # Read through its published Schema.org data. One price list, Madrid.
+          - chain: ahorramas
+            zone: madrid
     defaults:
       run:
         working-directory: core

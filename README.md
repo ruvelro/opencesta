@@ -21,7 +21,7 @@ El LLM no va en el bucle de extracción (caro, lento, no determinista). Va en el
 | ✅ 0 | Esqueleto, licencia, CI, política de datos |
 | ✅ 1 | Adaptador Mercadona + snapshot diario + Parquet publicado |
 | 2 | Parser de tickets local-first + dashboard personal |
-| 🔨 3 | Dia ✅ · Alcampo/Carrefour · zonificación real de Dia |
+| 🔨 3 | Dia ✅ · Ahorramas ✅ · Eroski pendiente · zonificación real de Dia |
 | 🔨 4 | Marca nacional ✅ · overrides comunitarios ✅ · marca blanca (embeddings + juez) |
 | ✅ 5 | Optimizador de cesta explicable |
 | 🔨 6 | MCP server ✅ · carrito pre-rellenado |
@@ -35,6 +35,31 @@ docs/   La web: una página estática con DuckDB-WASM, desplegada en GitHub Page
 ```
 
 El contrato entre ambas mitades es el fichero Parquet: cualquiera puede consumir el dataset sin tocar la web.
+
+## Añadir una cadena
+
+Las cadenas que publican sus datos como [Schema.org](https://schema.org/Product) se leen
+con un adaptador genérico: añadir una es una entrada en `CHAINS` dentro de
+[`core/src/opencesta/adapters/jsonld.py`](core/src/opencesta/adapters/jsonld.py), no un
+módulo nuevo.
+
+```python
+"ahorramas": ChainConfig(
+    chain="ahorramas", zone="madrid",
+    base_url="https://www.ahorramas.com",
+    product_sitemap="https://www.ahorramas.com/sitemap_0-product.xml",
+),
+```
+
+Se lee `application/ld+json`, que es el vocabulario que las webs publican **a propósito**
+para los buscadores: un contrato declarado, no una forma interna que haya que revertir.
+Los productos se descubren por el sitemap que la propia cadena anuncia en su `robots.txt`,
+así que solo se piden páginas que ha invitado a rastrear. Si la cadena no publica precio
+por unidad, se deriva del tamaño que trae el nombre ("Spaghettini Gallo **450g**"), porque
+sin esa cifra el producto no se puede comparar con ninguna otra cadena.
+
+Antes de añadir una, lee el [sondeo de 25 cadenas](DATA_POLICY.md): la mitad no publica
+precios de alimentación en la web abierta y varias bloquean a un agente identificado.
 
 ## La web
 
